@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+/* ========== CRITICAL: Mobile Layout ========== */
+
+/* Desktop sidebar - FORCE hide on mobile */
+.sidebar-desktop {
+  display: none !important;
+  visibility: hidden !important;
+  width: 0 !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+@media (min-width: 1024px) {
+  .sidebar-desktop {
+    display: flex !important;
+    visibility: visible !important;
+    flex-direction: column;
+    width: 220px !important;
+    min-width: 220px !important;
+    overflow: visible !important;
+    background: rgb(17 24 39);
+    border-right: 1px solid rgb(31 41 55);
+    flex-shrink: 0;
+  }
+}
+
+/* Desktop top bar - hide on mobile */
+.topbar-desktop {
+  display: none !important;
+}
+
+@media (min-width: 1024px) {
+  .topbar-desktop {
+    display: flex !important;
+    height: 48px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    border-bottom: 1px solid rgb(31 41 55);
+    background: rgb(17 24 39);
+    flex-shrink: 0;
+  }
+}
+
+/* Mobile top bar - show only on mobile */
+.topbar-mobile {
+  display: flex !important;
+}
+
+@media (min-width: 1024px) {
+  .topbar-mobile {
+    display: none !important;
+  }
+}
+
+/* Prevent ALL horizontal scroll */
+html, body, #root {
+  overflow-x: hidden !important;
+  max-width: 100vw !important;
+}
+
+/* Mobile sidebar overlay */
+.sidebar-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+}
+
+.sidebar-overlay-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.sidebar-overlay-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 260px;
+  background: rgb(17 24 39);
+  border-right: 1px solid rgb(31 41 55);
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+}
