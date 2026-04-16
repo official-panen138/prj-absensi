@@ -69,6 +69,25 @@ export default function MiniApp() {
     finally { setBusy(false); }
   };
 
+  const scanQrAndEnd = () => {
+    const tg = window.Telegram?.WebApp;
+    if (!tg?.showScanQrPopup) {
+      setErr('QR scanner tidak didukung di versi Telegram ini. Update Telegram app.');
+      return;
+    }
+    setErr(''); setInfo('');
+    tg.showScanQrPopup({ text: 'Scan QR dari grup monitor' }, (text) => {
+      const m = text && text.match(/qr_(\d+)_([a-f0-9]+)/);
+      if (!m) {
+        setErr('QR tidak dikenali. Pastikan scan QR dari grup monitor.');
+        return false;
+      }
+      tg.closeScanQrPopup();
+      act('/break-end-qr', { break_id: parseInt(m[1]), qr_token: m[2] });
+      return true;
+    });
+  };
+
   if (loading) return <div style={{padding:24,textAlign:'center'}}>Loading…</div>;
   if (err && !token) return <div style={{padding:24,textAlign:'center',color:'#f87171'}}>{err}</div>;
 
@@ -130,9 +149,9 @@ export default function MiniApp() {
       {onBreak && (
         <>
           <div style={{padding:'12px',background:'rgba(251,191,36,0.1)',border:'1px solid rgba(251,191,36,0.3)',borderRadius:10,fontSize:12,color:'#fbbf24',marginBottom:14,textAlign:'center'}}>
-            ⏱ Break aktif. Scan QR di grup monitor untuk Back to Work, atau klik tombol di bawah.
+            ⏱ Break aktif. Klik tombol di bawah → kamera akan terbuka untuk scan QR di grup monitor.
           </div>
-          <Btn color="emerald" onClick={() => act('/break-end')}>✓ Back to Work</Btn>
+          <Btn color="emerald" onClick={scanQrAndEnd}>📷 Scan QR — Back to Work</Btn>
         </>
       )}
 

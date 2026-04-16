@@ -627,6 +627,26 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
   ok(res, { break_id: breakLog.id, qr_token: qrToken, qr_expires_at: qrExp, limit_minutes: limit });
 });
 
+app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
+  const { break_id, qr_token } = req.body || {};
+  if (!break_id || !qr_token) return fail(res, 400, 'break_id and qr_token required');
+  const bl = db.prepare('SELECT * FROM break_log WHERE id = ?').get(+break_id);
+  if (!bl) return fail(res, 404, 'QR tidak ditemukan');
+  if (bl.qr_token !== qr_token) return fail(res, 400, 'QR token tidak cocok');
+  if (bl.staff_id !== req.staff.id) return fail(res, 403, 'QR ini bukan untuk Anda');
+  if (bl.end_time) return fail(res, 400, 'Break sudah selesai');
+  if (bl.qr_expires_at && new Date(bl.qr_expires_at) < new Date()) return fail(res, 400, 'QR expired');
+  const now = new Date();
+  const dur = Math.round((now - new Date(bl.start_time)) / 60000);
+  const overtime = dur > (bl.limit_minutes || 9999) ? 1 : 0;
+  db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = ?, is_overtime = ? WHERE id = ?').run(now.toISOString(), dur, overtime, bl.id);
+  db.prepare(`UPDATE attendance SET current_status = ?, break_start = NULL, break_type = NULL, break_limit = NULL,
+              total_break_minutes = COALESCE(total_break_minutes,0) + ?, break_violations = COALESCE(break_violations,0) + ?
+              WHERE staff_id = ? AND date = ?`)
+    .run('working', dur, overtime, req.staff.id, todayPP());
+  ok(res, { duration_minutes: dur, is_overtime: !!overtime });
+});
+
 app.post('/api/bot/break-end', tgAuth, (req, res) => {
   const today = todayPP();
   const bl = db.prepare('SELECT * FROM break_log WHERE staff_id = ? AND end_time IS NULL ORDER BY id DESC LIMIT 1').get(req.staff.id);
