@@ -1,17 +1,27 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dbPath = process.env.DB_PATH || path.join(__dirname, 'data.db');
+
+function resolveDbPath() {
+  if (process.env.DB_PATH) return process.env.DB_PATH;
+  // Auto-detect common persistent volume mount points
+  for (const dir of ['/data', '/app/data', '/var/data']) {
+    try { if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) return path.join(dir, 'data.db'); } catch {}
+  }
+  return path.join(__dirname, 'data.db');
+}
+
+const dbPath = resolveDbPath();
+const isPersistent = dbPath.startsWith('/data') || dbPath.startsWith('/app/data') || dbPath.startsWith('/var/data') || !!process.env.DB_PATH;
 
 export const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 console.log(`[db] path: ${dbPath}`);
-if (!process.env.DB_PATH) {
-  console.warn('[db] ⚠ DB_PATH env var not set — using ephemeral path. Data will be LOST on next deploy if not mounted to a volume.');
-}
+console.log(`[db] persistent: ${isPersistent ? 'YES' : 'NO (⚠ ephemeral — data will be lost on next deploy)'}`);
 
 export function migrate() {
   db.exec(`
