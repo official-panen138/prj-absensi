@@ -57,7 +57,7 @@ function attachHandlers(bot) {
     }
 
     if (s.step === 'pin') {
-      const expected = String(getSetting('registration_pin', '1234'));
+      const expected = String(process.env.REGISTRATION_PIN || getSetting('registration_pin', '1234'));
       if (txt !== expected) return ctx.reply('❌ PIN salah. Coba lagi atau hubungi admin.');
       s.step = 'name';
       return ctx.reply('✅ PIN benar.\n\nMasukkan *nama lengkap* Anda:', { parse_mode: 'Markdown' });
@@ -111,7 +111,10 @@ function attachHandlers(bot) {
         { parse_mode: 'Markdown', reply_markup: openMiniAppKeyboard() }
       );
 
-      const admins = getSetting('telegram_admin_chat_ids', []) || [];
+      const adminsEnv = process.env.TELEGRAM_ADMIN_CHAT_IDS;
+      const admins = adminsEnv
+        ? adminsEnv.split(',').map((s) => s.trim()).filter(Boolean)
+        : (getSetting('telegram_admin_chat_ids', []) || []);
       const muted = (getSetting('notification_prefs', {}) || {}).muted_types || [];
       if (!muted.includes('new_registration')) {
         for (const chatId of admins) {
