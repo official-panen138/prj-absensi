@@ -2,6 +2,15 @@ import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { db, setSetting } from './db.js';
 
+const FORCE = process.env.FORCE_SEED === 'true';
+const userCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+const staffCount = db.prepare('SELECT COUNT(*) AS c FROM staff').get().c;
+if ((userCount > 0 || staffCount > 0) && !FORCE) {
+  console.log(`[seed] DB already populated (${userCount} users, ${staffCount} staff) — skipping.`);
+  console.log('[seed] To force re-seed, set env FORCE_SEED=true');
+  process.exit(0);
+}
+
 const DEPARTMENTS = ['Customer Service', 'Finance', 'Captain', 'SEO Marketing', 'Social Media Marketing', 'CRM', 'Telemarketing'];
 const SHIFTS = ['morning', 'middle', 'night'];
 const CATEGORIES = ['indonesian', 'local'];
