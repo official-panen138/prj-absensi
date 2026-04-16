@@ -1,0 +1,16 @@
+{
+  "name": "project-absen",
+  "private": true,
+  "version": "0.1.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "install:all": "cd backend && npm install && cd ../dashboard && npm install",
+    "build": "cd dashboard && npm install && npm run build && cd ../backend && npm install",
+    "start": "cd backend && node server.js",
+    "seed": "cd backend && node seed.js",
+    "dev:backend": "cd backend && node --watch server.js",
+    "dev:frontend": "cd dashboard && npm run dev"
+  }
+}

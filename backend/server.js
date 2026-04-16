@@ -1,10 +1,17 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { db, getSetting, setSetting } from './db.js';
+import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, pushBreakQRToMonitor } from './bot.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = process.env.PORT || 8000;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
@@ -12,6 +19,8 @@ const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '5mb' }));
+
+app.get('/healthz', (req, res) => res.json({ ok: true, ts: Date.now() }));
 
 function ok(res, data, extra = {}) { return res.json({ success: true, data, ...extra }); }
 function fail(res, status, message) { return res.status(status).json({ success: false, message }); }
@@ -75,6 +84,8 @@ app.put('/api/staff/:id', auth, (req, res) => {
 app.put('/api/staff/:id/approve', auth, (req, res) => {
   const id = +req.params.id;
   db.prepare('UPDATE staff SET is_approved = 1 WHERE id = ?').run(id);
+  const s = db.prepare('SELECT name, telegram_id FROM staff WHERE id = ?').get(id);
+  if (s?.telegram_id) notifyApproved(s.telegram_id, s.name);
   ok(res, { id });
 });
 
@@ -439,6 +450,12 @@ app.get('/api/settings', auth, (req, res) => {
     try { settings[r.key] = { value: JSON.parse(r.value) }; }
     catch { settings[r.key] = { value: r.value }; }
   });
+  // Mask bot token in response
+  if (settings.bot_config?.value?.bot_token) {
+    const t = settings.bot_config.value.bot_token;
+    settings.bot_config.value.bot_token_masked = t.length > 8 ? '****' + t.slice(-6) : '****';
+    settings.bot_config.value.bot_token = '';
+  }
   const break_settings = db.prepare('SELECT * FROM break_settings').all();
   const shifts = db.prepare('SELECT * FROM shifts').all();
   ok(res, { settings, break_settings, shifts });
@@ -499,10 +516,151 @@ app.delete('/api/settings/workstations/:id', auth, (req, res) => {
   ok(res, {});
 });
 
+// ============ BOT CONFIG ============
+app.get('/api/bot/status', auth, (req, res) => {
+  ok(res, getBotStatus());
+});
+
+app.put('/api/settings/bot-config', auth, async (req, res) => {
+  const { bot_token, monitor_group_chat_id, miniapp_url } = req.body || {};
+  const existing = getSetting('bot_config', {}) || {};
+  const newToken = (bot_token || '').trim();
+  const cfg = {
+    bot_token: newToken || existing.bot_token || '',
+    monitor_group_chat_id: (monitor_group_chat_id ?? existing.monitor_group_chat_id ?? '').toString().trim(),
+    miniapp_url: (miniapp_url ?? existing.miniapp_url ?? '').trim(),
+  };
+  setSetting('bot_config', cfg);
+  const status = await reloadBot();
+  res.json({ success: true, status });
+});
+
+// ============ TELEGRAM MINI APP ============
+function tgAuth(req, res, next) {
+  const h = req.headers.authorization || '';
+  const tok = h.startsWith('Bearer ') ? h.slice(7) : null;
+  if (!tok) return fail(res, 401, 'Missing token');
+  try {
+    const payload = jwt.verify(tok, JWT_SECRET);
+    if (payload.kind !== 'tg') return fail(res, 401, 'Wrong token kind');
+    req.staff = db.prepare('SELECT * FROM staff WHERE id = ?').get(payload.staff_id);
+    if (!req.staff || !req.staff.is_active) return fail(res, 403, 'Staff inactive');
+    next();
+  } catch {
+    return fail(res, 401, 'Invalid token');
+  }
+}
+
+app.post('/api/bot/auth/telegram', (req, res) => {
+  const { initData } = req.body || {};
+  const user = verifyInitData(initData);
+  if (!user) return fail(res, 401, 'Invalid initData');
+  const staff = db.prepare('SELECT * FROM staff WHERE telegram_id = ?').get(String(user.id));
+  if (!staff) return fail(res, 404, 'Staff not registered. Use /start in bot first.');
+  if (!staff.is_approved) return fail(res, 403, 'Akun menunggu persetujuan admin.');
+  if (!staff.is_active) return fail(res, 403, 'Akun nonaktif.');
+  const token = jwt.sign({ kind: 'tg', staff_id: staff.id }, JWT_SECRET, { expiresIn: '12h' });
+  res.json({ token, staff: { id: staff.id, name: staff.name, department: staff.department, current_shift: staff.current_shift } });
+});
+
+app.get('/api/bot/me', tgAuth, (req, res) => {
+  const today = todayPP();
+  const att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
+  const sched = db.prepare('SELECT status, shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
+  res.json({ success: true, staff: { id: req.staff.id, name: req.staff.name, department: req.staff.department, current_shift: req.staff.current_shift }, attendance: att || null, schedule: sched || null });
+});
+
+app.post('/api/bot/clock-in', tgAuth, (req, res) => {
+  const today = todayPP();
+  const existing = db.prepare('SELECT id FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
+  if (existing) return fail(res, 400, 'Sudah clock-in hari ini.');
+  const now = new Date();
+  const shiftRow = db.prepare('SELECT start_time FROM shifts WHERE name = ?').get(req.staff.current_shift);
+  const grace = +(getSetting('late_grace_minutes', 5));
+  let lateMin = 0;
+  if (shiftRow?.start_time) {
+    const [h, m] = shiftRow.start_time.split(':').map(Number);
+    const shiftStart = new Date(now); shiftStart.setHours(h, m, 0, 0);
+    const diff = Math.round((now - shiftStart) / 60000);
+    if (diff > grace) lateMin = diff;
+  }
+  const ip = req.ip || req.headers['x-forwarded-for'] || '';
+  db.prepare('INSERT INTO attendance(staff_id,date,shift,clock_in,late_minutes,ip_address,current_status) VALUES(?,?,?,?,?,?,?)')
+    .run(req.staff.id, today, req.staff.current_shift, now.toISOString(), lateMin, String(ip).slice(0, 45), 'working');
+  ok(res, { clock_in: now.toISOString(), late_minutes: lateMin });
+});
+
+app.post('/api/bot/clock-out', tgAuth, (req, res) => {
+  const today = todayPP();
+  const att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
+  if (!att) return fail(res, 400, 'Belum clock-in.');
+  if (att.clock_out) return fail(res, 400, 'Sudah clock-out.');
+  const now = new Date();
+  const totalMin = Math.round((now - new Date(att.clock_in)) / 60000);
+  const breakMin = att.total_break_minutes || 0;
+  const workMin = Math.max(0, totalMin - breakMin);
+  const productive = totalMin > 0 ? Math.round((workMin / totalMin) * 100) : 0;
+  db.prepare('UPDATE attendance SET clock_out = ?, current_status = ?, total_work_minutes = ?, productive_ratio = ? WHERE id = ?')
+    .run(now.toISOString(), 'offline', workMin, productive, att.id);
+  ok(res, { clock_out: now.toISOString(), total_work_minutes: workMin, productive_ratio: productive });
+});
+
+app.post('/api/bot/break-start', tgAuth, async (req, res) => {
+  const { type } = req.body || {};
+  if (!['smoke', 'toilet', 'outside'].includes(type)) return fail(res, 400, 'Invalid break type');
+  const today = todayPP();
+  const att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
+  if (!att) return fail(res, 400, 'Belum clock-in.');
+  if (att.current_status !== 'working') return fail(res, 400, 'Sedang break, end dulu.');
+  const bs = db.prepare('SELECT daily_quota_minutes FROM break_settings WHERE type = ?').get(type);
+  const limit = bs?.daily_quota_minutes || 15;
+  const now = new Date();
+  const qrToken = crypto.randomBytes(8).toString('hex');
+  const qrExp = new Date(now.getTime() + 5 * 60000).toISOString();
+  const r = db.prepare('INSERT INTO break_log(attendance_id,staff_id,type,start_time,limit_minutes,qr_token,qr_expires_at) VALUES(?,?,?,?,?,?,?)')
+    .run(att.id, req.staff.id, type, now.toISOString(), limit, qrToken, qrExp);
+  const statusMap = { smoke: 'smoking', toilet: 'toilet', outside: 'outside' };
+  db.prepare('UPDATE attendance SET current_status = ?, break_start = ?, break_type = ?, break_limit = ? WHERE id = ?')
+    .run(statusMap[type], now.toISOString(), type, limit, att.id);
+  const breakLog = { id: r.lastInsertRowid, type, qr_token: qrToken };
+  pushBreakQRToMonitor(breakLog, req.staff).catch((e) => console.warn('[bot] push QR failed:', e.message));
+  ok(res, { break_id: breakLog.id, qr_token: qrToken, qr_expires_at: qrExp, limit_minutes: limit });
+});
+
+app.post('/api/bot/break-end', tgAuth, (req, res) => {
+  const today = todayPP();
+  const bl = db.prepare('SELECT * FROM break_log WHERE staff_id = ? AND end_time IS NULL ORDER BY id DESC LIMIT 1').get(req.staff.id);
+  if (!bl) return fail(res, 400, 'Tidak ada break aktif.');
+  const qrRequired = !!getSetting('qr_required', false);
+  if (qrRequired) return fail(res, 400, 'QR scan required. Scan QR dari grup monitor.');
+  const now = new Date();
+  const dur = Math.round((now - new Date(bl.start_time)) / 60000);
+  const overtime = dur > (bl.limit_minutes || 9999) ? 1 : 0;
+  db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = ?, is_overtime = ? WHERE id = ?').run(now.toISOString(), dur, overtime, bl.id);
+  db.prepare(`UPDATE attendance SET current_status = ?, break_start = NULL, break_type = NULL, break_limit = NULL,
+              total_break_minutes = COALESCE(total_break_minutes,0) + ?, break_violations = COALESCE(break_violations,0) + ?
+              WHERE staff_id = ? AND date = ?`)
+    .run('working', dur, overtime, req.staff.id, today);
+  ok(res, { duration_minutes: dur, is_overtime: !!overtime });
+});
+
+// ============ SERVE FRONTEND (production) ============
+const distDir = path.resolve(__dirname, '../dashboard/dist');
+if (existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.get(/^\/(?!api\/).*/, (req, res) => {
+    res.sendFile(path.join(distDir, 'index.html'));
+  });
+  console.log(`[backend] serving frontend from ${distDir}`);
+}
+
 // ============ ERROR HANDLER ============
 app.use((err, req, res, next) => {
   console.error(err);
   res.status(500).json({ success: false, message: err.message });
 });
 
-app.listen(PORT, () => console.log(`[backend] listening on http://localhost:${PORT}`));
+app.listen(PORT, () => {
+  console.log(`[backend] listening on http://localhost:${PORT}`);
+  startBot();
+});

@@ -23,6 +23,10 @@ export default function SettingsPage({ token, user }) {
   const [graceForm, setGraceForm] = useState(5);
   const [pinForm, setPinForm] = useState('');
   const [showPin, setShowPin] = useState(false);
+  const [botForm, setBotForm] = useState({ bot_token: '', monitor_group_chat_id: '', miniapp_url: '' });
+  const [botTokenMasked, setBotTokenMasked] = useState('');
+  const [botStatus, setBotStatus] = useState(null);
+  const [showBotToken, setShowBotToken] = useState(false);
 
   const fetchSettings = useCallback(async () => {
     setLoading(true);
@@ -44,6 +48,12 @@ export default function SettingsPage({ token, user }) {
       const qr = s.qr_required?.value; setQrRequired(qr === true || qr === 'true');
       const grace = s.late_grace_minutes?.value; if (grace !== undefined) setGraceForm(typeof grace === 'string' ? parseInt(grace) : (typeof grace === 'number' ? grace : 5));
       const pin = s.registration_pin?.value; if (pin) setPinForm(typeof pin === 'string' ? pin : String(pin));
+      const bc = s.bot_config?.value;
+      if (bc) {
+        setBotForm({ bot_token: '', monitor_group_chat_id: bc.monitor_group_chat_id || '', miniapp_url: bc.miniapp_url || '' });
+        setBotTokenMasked(bc.bot_token_masked || '');
+      }
+      try { const bs = await apiFetch(token, '/bot/status'); setBotStatus(bs.data || null); } catch (e) {}
       try { const wsRes = await apiFetch(token, '/settings/workstations'); setWorkstations(wsRes.data || []); } catch (e) {}
     } catch (e) { setToast({ type: 'error', text: e.message }); } finally { setLoading(false); }
   }, [token]);
@@ -76,6 +86,65 @@ export default function SettingsPage({ token, user }) {
       <Toast msg={toast} onClose={() => setToast(null)} />
       <h1 className="text-xl lg:text-2xl font-extrabold mb-5">Settings</h1>
       {!isAdmin && <div className="px-4 py-2.5 bg-yellow-500/15 border border-yellow-500/30 rounded-lg text-yellow-400 text-[13px] mb-5">⚠️ Only Admin can change settings.</div>}
+
+      {/* Bot Configuration */}
+      <Card className="p-5 mb-4">
+        <SectionHeader title="🤖 Bot Configuration" actions={isAdmin && (
+          <Btn size="sm" onClick={() => save('bot', '/settings/bot-config', { ...botForm, miniapp_url: window.location.origin + '/miniapp' })} disabled={saving.bot}>
+            {saving.bot ? <Spinner /> : '💾 Save & Reload Bot'}
+          </Btn>
+        )} />
+        <div className="text-xs text-gray-500 mb-3.5">
+          Konfigurasi bot Telegram. Token disimpan di database. Bot otomatis reload saat tombol Save ditekan.
+        </div>
+
+        {/* Status indicator */}
+        <div className="flex items-center gap-2 mb-4 px-3 py-2 bg-gray-800 rounded-lg border border-gray-700 flex-wrap">
+          <div className={`w-2.5 h-2.5 rounded-full ${botStatus?.running ? 'bg-emerald-400 pulse-dot' : 'bg-gray-500'}`} />
+          {botStatus?.running ? (
+            <>
+              <span className="text-emerald-400 font-semibold text-[13px]">Bot ONLINE</span>
+              <span className="font-mono text-xs text-gray-400">@{botStatus.username}</span>
+              <span className="text-[10px] text-gray-500 ml-auto">
+                Monitor Group: {botStatus.monitor_group_set ? '✓' : '✗ belum diset'}
+              </span>
+            </>
+          ) : (
+            <span className="text-gray-500 font-semibold text-[13px]">Bot OFFLINE — set token untuk mengaktifkan</span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4">
+          <FormRow label="BOT TOKEN" note={botTokenMasked ? `tersimpan: ${botTokenMasked}` : 'dari @BotFather'}>
+            <div className="flex gap-2">
+              <input
+                type={showBotToken ? 'text' : 'password'}
+                className={`${inputCls} font-mono`}
+                value={botForm.bot_token}
+                disabled={!isAdmin}
+                onChange={(e) => setBotForm((f) => ({ ...f, bot_token: e.target.value }))}
+                placeholder={botTokenMasked ? '(biarkan kosong untuk tetap pakai yang lama)' : '123456:ABC-DEF...'}
+              />
+              <Btn variant="ghost" size="sm" onClick={() => setShowBotToken(!showBotToken)}>
+                {showBotToken ? 'Hide' : 'Show'}
+              </Btn>
+            </div>
+          </FormRow>
+          <FormRow label="MONITOR GROUP CHAT ID" note="grup tempat QR break dikirim">
+            <input
+              className={`${inputCls} font-mono`}
+              value={botForm.monitor_group_chat_id}
+              disabled={!isAdmin}
+              onChange={(e) => setBotForm((f) => ({ ...f, monitor_group_chat_id: e.target.value }))}
+              placeholder="-1001234567890"
+            />
+          </FormRow>
+        </div>
+
+        <div className="text-[11px] text-gray-500 mt-1 font-mono">
+          Mini App URL auto: <span className="text-gray-400">{window.location.origin}/miniapp</span>
+        </div>
+      </Card>
 
       {/* Late Grace Period */}
       <Card className="p-5 mb-4">

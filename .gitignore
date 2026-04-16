@@ -1,6 +1,7 @@
 node_modules/
 *.log
 .env
+backend/.env
 .DS_Store
 
 # SQLite
@@ -11,3 +12,6 @@ backend/data.db-wal
 # Build
 dashboard/dist/
 dashboard/.vite/
+
+# Railway
+.railway/

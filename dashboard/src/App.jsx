@@ -114,7 +114,7 @@ export default function App() {
         {/* Mobile top bar */}
         <div style={{height:56,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',borderBottom:'1px solid rgb(31 41 55)',background:'rgb(17 24 39)',flexShrink:0}}>
           <button onClick={() => setSidebarOpen(true)} style={{background:'transparent',border:'1px solid #374151',borderRadius:6,color:'#9ca3af',width:36,height:36,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',fontSize:18}}>☰</button>
-          <div style={{fontFamily:'monospace',fontWeight:700,fontSize:12,color:'#34d399',letterSpacing:1}}>S123GROUP</div>
+          <div style={{fontFamily:'monospace',fontWeight:700,fontSize:12,color:'#34d399',letterSpacing:1}}>PNN GROUP</div>
           <div style={{fontSize:11,color:'#34d399',border:'1px solid rgba(52,211,153,0.3)',borderRadius:9999,padding:'2px 8px',fontWeight:600}}>{auth.user?.name}</div>
         </div>
 
