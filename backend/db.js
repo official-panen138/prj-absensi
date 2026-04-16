@@ -8,6 +8,10 @@ const dbPath = process.env.DB_PATH || path.join(__dirname, 'data.db');
 export const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+console.log(`[db] path: ${dbPath}`);
+if (!process.env.DB_PATH) {
+  console.warn('[db] ⚠ DB_PATH env var not set — using ephemeral path. Data will be LOST on next deploy if not mounted to a volume.');
+}
 
 export function migrate() {
   db.exec(`

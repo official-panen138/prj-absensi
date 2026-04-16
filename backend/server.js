@@ -682,5 +682,12 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`[backend] listening on http://localhost:${PORT}`);
+  try {
+    const u = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+    const s = db.prepare('SELECT COUNT(*) AS c FROM staff').get().c;
+    const sd = db.prepare('SELECT COUNT(*) AS c FROM schedule_daily').get().c;
+    const att = db.prepare('SELECT COUNT(*) AS c FROM attendance').get().c;
+    console.log(`[backend] DB stats: ${u} users · ${s} staff · ${sd} schedule rows · ${att} attendance rows`);
+  } catch (e) { console.warn('[backend] stats query failed:', e.message); }
   startBot();
 });
