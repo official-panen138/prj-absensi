@@ -12,10 +12,11 @@ let currentToken = null;
 
 function readConfig() {
   const cfg = getSetting('bot_config', {}) || {};
+  // Priority: env var > DB setting. Env vars in Railway survive DB resets.
   return {
-    token: (cfg.bot_token || '').trim() || null,
-    monitorGroupId: (cfg.monitor_group_chat_id || '').toString().trim() || null,
-    miniappUrl: (cfg.miniapp_url || '').trim() || 'http://localhost:5173/miniapp',
+    token: (process.env.BOT_TOKEN || cfg.bot_token || '').trim() || null,
+    monitorGroupId: (process.env.MONITOR_GROUP_CHAT_ID || cfg.monitor_group_chat_id || '').toString().trim() || null,
+    miniappUrl: (process.env.MINIAPP_URL || cfg.miniapp_url || '').trim() || 'http://localhost:5173/miniapp',
   };
 }
 
