@@ -680,9 +680,20 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, message: err.message });
 });
 
+function ensureAdminUser() {
+  const existing = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
+  if (existing) return false;
+  const pwd = process.env.ADMIN_INITIAL_PASSWORD || 'admin123';
+  const hash = bcrypt.hashSync(pwd, 8);
+  db.prepare('INSERT INTO users(username,password_hash,name,role) VALUES(?,?,?,?)').run('admin', hash, 'Administrator', 'admin');
+  console.log(`[backend] admin user created (admin / ${pwd}) — change password ASAP`);
+  return true;
+}
+
 app.listen(PORT, () => {
   console.log(`[backend] listening on http://localhost:${PORT}`);
   try {
+    ensureAdminUser();
     const u = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
     const s = db.prepare('SELECT COUNT(*) AS c FROM staff').get().c;
     const sd = db.prepare('SELECT COUNT(*) AS c FROM schedule_daily').get().c;
