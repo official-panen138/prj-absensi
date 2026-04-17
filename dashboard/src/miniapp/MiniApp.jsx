@@ -25,6 +25,34 @@ const STATUS_LABEL = {
   offline: '⭘ Offline',
 };
 
+const START_QUOTES = [
+  'Setiap panggilan adalah peluang baru. Let\'s close deals hari ini! 📞🔥',
+  'Marketing bukan cuma jual produk — kita bangun hubungan. Semangat!',
+  'Konsistensi mengalahkan intensitas. Target hari ini pasti tercapai! 📈',
+  'Pelanggan senang adalah kemenangan. Buat mereka tersenyum hari ini! ⭐',
+  'Kamu bukan sekadar marketing, kamu storyteller brand ini. 🎯',
+  'Hari ini peluang terbaik untuk jadi versi terbaik dirimu. Go get it!',
+  'Behind every sale, ada effort luar biasa. Appreciate your hustle! 💪',
+  'No pressure no diamonds. Target menanti, tim ini percaya padamu!',
+  'Lead terbaik datang pada yang paling konsisten. Itu kamu! 🚀',
+  'Marketing hebat = empati + eksekusi. Tunjukkan dua-duanya hari ini!',
+];
+
+const END_QUOTES = [
+  'Terima kasih atas kerja keras hari ini! Prestasi dibangun setiap hari. 🏆',
+  'Well done! Rest well, tomorrow we conquer again. 💙',
+  'Setiap usaha kamu hari ini bawa tim lebih dekat ke target. Makasih banyak!',
+  'Shift selesai. Kamu bagian penting dari tim ini — appreciated! 🌟',
+  'Kerja keras hari ini = modal sukses besok. Istirahat yang cukup ya!',
+  'Hebat! Pulang dengan bangga, besok kita tebar pesona lagi. 🚀',
+  'Terima kasih sudah memberi yang terbaik hari ini. Recharge dulu! ⚡',
+  'Kamu rockstar! See you tomorrow dengan energi fresh. 😊',
+  'Mission complete for today. Kamu bikin tim lebih kuat. Thanks!',
+  'Good work today! Proud to have you di tim marketing ini. 🙌',
+];
+
+const pickRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
 export default function MiniApp() {
   const [token, setToken] = useState(null);
   const [me, setMe] = useState(null);
@@ -33,6 +61,7 @@ export default function MiniApp() {
   const [err, setErr] = useState('');
   const [info, setInfo] = useState('');
   const [now, setNow] = useState(Date.now());
+  const [popup, setPopup] = useState(null);
 
   useEffect(() => {
     const iv = setInterval(() => setNow(Date.now()), 1000);
@@ -69,6 +98,11 @@ export default function MiniApp() {
     try {
       const r = await api(path, token, { method: 'POST', body });
       setInfo('✓ OK');
+      if (path === '/clock-in') {
+        setPopup({ kind: 'start', title: '🚀 Selamat Bekerja!', quote: pickRandom(START_QUOTES), color: '#34d399' });
+      } else if (path === '/clock-out') {
+        setPopup({ kind: 'end', title: '🙏 Terima Kasih!', quote: pickRandom(END_QUOTES), color: '#60a5fa' });
+      }
       await refresh();
       return r;
     } catch (e) { setErr(e.message); }
@@ -130,6 +164,42 @@ export default function MiniApp() {
 
   return (
     <div style={{maxWidth:420,margin:'0 auto',padding:'20px 18px',fontFamily:'system-ui,-apple-system,sans-serif',color:'#f3f4f6',minHeight:'100vh',background:'rgb(17 24 39)'}}>
+      {popup && (
+        <div
+          onClick={() => setPopup(null)}
+          style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:20,animation:'fadeIn .2s'}}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              maxWidth:360,background:'rgb(31 41 55)',borderRadius:20,padding:'28px 24px',
+              border:`2px solid ${popup.color}33`,boxShadow:`0 0 40px ${popup.color}22`,
+              textAlign:'center'
+            }}
+          >
+            <div style={{fontSize:32,marginBottom:12}}>{popup.title.split(' ')[0]}</div>
+            <div style={{fontSize:18,fontWeight:800,color:popup.color,marginBottom:16}}>
+              {popup.title.split(' ').slice(1).join(' ')}
+            </div>
+            <div style={{fontSize:14,lineHeight:1.55,color:'#e5e7eb',marginBottom:22}}>
+              {popup.quote}
+            </div>
+            <div style={{fontSize:11,color:'#9ca3af',marginBottom:16,fontFamily:'monospace'}}>
+              — PNNGROUP Marketing Team —
+            </div>
+            <button
+              onClick={() => setPopup(null)}
+              style={{
+                width:'100%',padding:'14px',borderRadius:12,border:'none',
+                background:popup.color,color:'#0b1220',fontWeight:700,fontSize:15,cursor:'pointer'
+              }}
+            >
+              {popup.kind === 'start' ? "Let's Go! 🔥" : 'Terima kasih 🙏'}
+            </button>
+          </div>
+        </div>
+      )}
+
       <div style={{textAlign:'center',marginBottom:18}}>
         <div style={{fontFamily:'monospace',fontWeight:700,fontSize:14,color:'#34d399',letterSpacing:2}}>PNNGROUP</div>
         <div style={{fontSize:11,color:'#6b7280',marginTop:2}}>Workforce Mini App</div>
