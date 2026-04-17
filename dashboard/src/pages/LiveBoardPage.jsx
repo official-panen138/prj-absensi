@@ -35,9 +35,29 @@ export default function LiveBoardPage({ token }) {
 
   useEffect(() => {
     fetchLive();
+    // Polling fallback (untuk kalau SSE ga tersambung)
     const iv = setInterval(fetchLive, 30000);
     return () => clearInterval(iv);
   }, [fetchLive]);
+
+  // Real-time updates via Server-Sent Events
+  useEffect(() => {
+    if (!token) return;
+    const tenantOverride = localStorage.getItem('wms_tenant_override') || '';
+    const params = new URLSearchParams({ auth: token });
+    if (tenantOverride) params.set('tenant_id', tenantOverride);
+    const es = new EventSource(`/api/activity/live/stream?${params.toString()}`);
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'ping' || data.type === 'connected') return;
+        // Mutation terjadi → refetch
+        fetchLive();
+      } catch {}
+    };
+    es.onerror = () => { /* auto-reconnect handled by browser */ };
+    return () => es.close();
+  }, [token, fetchLive]);
 
   const forceClockOut = async (staff) => {
     if (!window.confirm('Force END ' + staff.name + '?')) return;

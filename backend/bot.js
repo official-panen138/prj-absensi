@@ -2,6 +2,7 @@ import { Bot, InlineKeyboard, InputFile, session } from 'grammy';
 import crypto from 'node:crypto';
 import QRCode from 'qrcode';
 import { db, getTenantSetting, getDefaultTenantId } from './db.js';
+import { emitLiveUpdate } from './events.js';
 
 const DEPARTMENTS = ['Customer Service', 'Finance', 'Captain', 'SEO Marketing', 'Social Media Marketing', 'CRM', 'Telemarketing'];
 const CATEGORIES = [{ key: 'indonesian', label: 'Indonesian' }, { key: 'local', label: 'Cambodian' }];
@@ -154,6 +155,7 @@ function attachHandlers(bot, tenantId) {
     if (staff.is_approved) return ctx.answerCallbackQuery({ text: 'Sudah di-approve sebelumnya', show_alert: true });
     db.prepare('UPDATE staff SET is_approved = 1 WHERE id = ?').run(staffId);
     if (staff.telegram_id) await notifyApproved(tenantId, staff.telegram_id, staff.name);
+    emitLiveUpdate(tenantId, 'staff_approved_bot', { staff_id: staffId });
     const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
     await ctx.editMessageText(`✅ *${staff.name}* APPROVED\n_oleh ${by}_`, { parse_mode: 'Markdown' });
     await ctx.answerCallbackQuery({ text: '✅ Approved!' });
@@ -204,6 +206,7 @@ async function handleQrScan(ctx, tenantId, payload) {
     notifyOvertime(tenantId, { name: staff.name, department: staff.department }, bl.type, dur, bl.limit_minutes).catch(() => {});
   }
 
+  emitLiveUpdate(tenantId, 'break_end_qr_bot', { staff_id: bl.staff_id });
   return ctx.reply(`✅ Welcome back, ${staff.name}! Break: ${dur}m${overtime ? ' ⚠️ overtime' : ''}.`, { reply_markup: openMiniAppKeyboard(tenantId) });
 }
 

@@ -10,6 +10,7 @@ import { existsSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { db, getSetting, setSetting, getDefaultTenantId, getTenantSetting, setTenantSetting } from './db.js';
 import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, pushBreakQRToMonitor } from './bot.js';
+import { liveBus, emitLiveUpdate } from './events.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -176,6 +177,7 @@ app.put('/api/staff/:id/approve', auth, (req, res) => {
   if (!s) return fail(res, 404, 'Staff not found');
   db.prepare('UPDATE staff SET is_approved = 1 WHERE id = ?').run(id);
   if (s.telegram_id) notifyApproved(s.telegram_id, s.name);
+  emitLiveUpdate(s.tenant_id, 'staff_approved', { staff_id: id });
   ok(res, { id });
 });
 
@@ -200,6 +202,42 @@ app.delete('/api/staff/:id/permanent', auth, (req, res) => {
 function todayPP() {
   return new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
 }
+
+// Server-Sent Events stream untuk real-time updates Live Board
+app.get('/api/activity/live/stream', (req, res) => {
+  // EventSource tidak support Authorization header, pakai query param
+  const tok = (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null) || req.query.auth;
+  if (!tok) return res.status(401).json({ success: false, message: 'Missing token' });
+  let payload;
+  try { payload = jwt.verify(tok, JWT_SECRET); } catch { return res.status(401).json({ success: false, message: 'Invalid token' }); }
+
+  const isSuper = payload.role === 'super_admin';
+  const override = req.query.tenant_id ? parseInt(req.query.tenant_id) : null;
+  const viewTenantId = isSuper ? (override || null) : (payload.tenant_id || null);
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const send = (data) => { try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch {} };
+  send({ type: 'connected', ts: Date.now() });
+
+  const listener = (evt) => {
+    if (isSuper && !viewTenantId) return send(evt); // super admin all
+    if (evt.tenantId === viewTenantId) return send(evt);
+  };
+  liveBus.on('update', listener);
+
+  // Heartbeat tiap 25 detik supaya koneksi tidak di-drop proxy
+  const hb = setInterval(() => send({ type: 'ping', ts: Date.now() }), 25000);
+
+  req.on('close', () => {
+    liveBus.off('update', listener);
+    clearInterval(hb);
+  });
+});
 
 app.get('/api/activity/live', auth, (req, res) => {
   const today = todayPP();
@@ -279,6 +317,7 @@ app.post('/api/activity/force-clockout', auth, (req, res) => {
   if (!att) return fail(res, 404, 'Attendance not found for today');
   db.prepare('UPDATE attendance SET clock_out = ?, current_status = ? WHERE id = ?').run(new Date().toISOString(), 'offline', att.id);
   db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = CAST((julianday(?) - julianday(start_time)) * 1440 AS INTEGER) WHERE staff_id = ? AND end_time IS NULL').run(new Date().toISOString(), new Date().toISOString(), staff_id);
+  emitLiveUpdate(s.tenant_id, 'force_clockout', { staff_id });
   ok(res, { id: att.id });
 });
 
@@ -821,6 +860,7 @@ app.post('/api/bot/clock-in', tgAuth, (req, res) => {
   if (lateMin > 0) {
     notifyLate(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, lateMin, req.staff.current_shift).catch((e) => console.warn('[bot] notifyLate:', e.message));
   }
+  emitLiveUpdate(req.staff.tenant_id, 'clock_in', { staff_id: req.staff.id });
   ok(res, { clock_in: now.toISOString(), late_minutes: lateMin });
 });
 
@@ -836,6 +876,7 @@ app.post('/api/bot/clock-out', tgAuth, (req, res) => {
   const productive = totalMin > 0 ? Math.round((workMin / totalMin) * 100) : 0;
   db.prepare('UPDATE attendance SET clock_out = ?, current_status = ?, total_work_minutes = ?, productive_ratio = ? WHERE id = ?')
     .run(now.toISOString(), 'offline', workMin, productive, att.id);
+  emitLiveUpdate(req.staff.tenant_id, 'clock_out', { staff_id: req.staff.id });
   ok(res, { clock_out: now.toISOString(), total_work_minutes: workMin, productive_ratio: productive });
 });
 
@@ -868,6 +909,7 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
   const statusMap = { smoke: 'smoking', toilet: 'toilet', outside: 'outside' };
   db.prepare('UPDATE attendance SET current_status = ?, break_start = ?, break_type = ?, break_limit = ? WHERE id = ?')
     .run(statusMap[type], now.toISOString(), type, limit, att.id);
+  emitLiveUpdate(req.staff.tenant_id, 'break_start', { staff_id: req.staff.id, type });
   ok(res, { break_id: r.lastInsertRowid, limit_minutes: limit });
 });
 
@@ -906,6 +948,7 @@ app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
   if (overtime) {
     notifyOvertime(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, bl.type, dur, bl.limit_minutes).catch((e) => console.warn('[bot] notifyOvertime:', e.message));
   }
+  emitLiveUpdate(req.staff.tenant_id, 'break_end', { staff_id: req.staff.id });
   ok(res, { duration_minutes: dur, is_overtime: !!overtime });
 });
 
@@ -923,6 +966,7 @@ app.post('/api/bot/break-end', tgAuth, (req, res) => {
               total_break_minutes = COALESCE(total_break_minutes,0) + ?, break_violations = COALESCE(break_violations,0) + ?
               WHERE staff_id = ? AND date = ?`)
     .run('working', dur, overtime, req.staff.id, today);
+  emitLiveUpdate(req.staff.tenant_id, 'break_end_manual', { staff_id: req.staff.id });
   ok(res, { duration_minutes: dur, is_overtime: !!overtime });
 });
 
