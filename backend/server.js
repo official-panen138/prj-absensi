@@ -615,18 +615,28 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
   const bs = db.prepare('SELECT daily_quota_minutes FROM break_settings WHERE type = ?').get(type);
   const limit = bs?.daily_quota_minutes || 15;
   const now = new Date();
-  const qrToken = crypto.randomBytes(8).toString('hex');
-  // QR valid sampai 24 jam (atau sampai break end_time, mana yg duluan)
-  // Ini supaya staff yang overtime tetap bisa back-to-work
-  const qrExp = new Date(now.getTime() + 24 * 60 * 60000).toISOString();
-  const r = db.prepare('INSERT INTO break_log(attendance_id,staff_id,type,start_time,limit_minutes,qr_token,qr_expires_at) VALUES(?,?,?,?,?,?,?)')
-    .run(att.id, req.staff.id, type, now.toISOString(), limit, qrToken, qrExp);
+  // Buat break log tanpa QR — QR baru di-generate saat user klik "Back to Work"
+  const r = db.prepare('INSERT INTO break_log(attendance_id,staff_id,type,start_time,limit_minutes) VALUES(?,?,?,?,?)')
+    .run(att.id, req.staff.id, type, now.toISOString(), limit);
   const statusMap = { smoke: 'smoking', toilet: 'toilet', outside: 'outside' };
   db.prepare('UPDATE attendance SET current_status = ?, break_start = ?, break_type = ?, break_limit = ? WHERE id = ?')
     .run(statusMap[type], now.toISOString(), type, limit, att.id);
-  const breakLog = { id: r.lastInsertRowid, type, qr_token: qrToken };
-  pushBreakQRToMonitor(breakLog, req.staff).catch((e) => console.warn('[bot] push QR failed:', e.message));
-  ok(res, { break_id: breakLog.id, qr_token: qrToken, qr_expires_at: qrExp, limit_minutes: limit });
+  ok(res, { break_id: r.lastInsertRowid, limit_minutes: limit });
+});
+
+app.post('/api/bot/break-request-qr', tgAuth, async (req, res) => {
+  const today = todayPP();
+  const att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
+  if (!att) return fail(res, 400, 'Belum clock-in.');
+  const bl = db.prepare('SELECT * FROM break_log WHERE staff_id = ? AND end_time IS NULL ORDER BY id DESC LIMIT 1').get(req.staff.id);
+  if (!bl) return fail(res, 400, 'Tidak ada break aktif.');
+  // Generate QR token baru (regenerate setiap request supaya QR lama invalid)
+  const qrToken = crypto.randomBytes(8).toString('hex');
+  const qrExp = new Date(Date.now() + 10 * 60000).toISOString(); // valid 10 menit
+  db.prepare('UPDATE break_log SET qr_token = ?, qr_expires_at = ? WHERE id = ?').run(qrToken, qrExp, bl.id);
+  const updatedBl = { id: bl.id, type: bl.type, qr_token: qrToken };
+  pushBreakQRToMonitor(updatedBl, req.staff).catch((e) => console.warn('[bot] push QR failed:', e.message));
+  ok(res, { break_id: bl.id, qr_token: qrToken, qr_expires_at: qrExp });
 });
 
 app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {

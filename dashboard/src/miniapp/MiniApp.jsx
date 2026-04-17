@@ -75,23 +75,37 @@ export default function MiniApp() {
     finally { setBusy(false); }
   };
 
-  const scanQrAndEnd = () => {
+  const scanQrAndEnd = async () => {
     const tg = window.Telegram?.WebApp;
     if (!tg?.showScanQrPopup) {
       setErr('QR scanner tidak didukung di versi Telegram ini. Update Telegram app.');
       return;
     }
     setErr(''); setInfo('');
-    tg.showScanQrPopup({ text: 'Scan QR dari grup monitor' }, (text) => {
-      const m = text && text.match(/qr_(\d+)_([a-f0-9]+)/);
-      if (!m) {
-        setErr('QR tidak dikenali. Pastikan scan QR dari grup monitor.');
-        return false;
-      }
-      tg.closeScanQrPopup();
-      act('/break-end-qr', { break_id: parseInt(m[1]), qr_token: m[2] });
-      return true;
-    });
+    setBusy(true);
+    try {
+      // Request QR baru → di-push ke monitor group
+      await api('/break-request-qr', token, { method: 'POST' });
+      setInfo('✓ QR dikirim ke grup monitor. Buka kamera untuk scan.');
+    } catch (e) {
+      setErr('Gagal request QR: ' + e.message);
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+    // Tunggu sebentar lalu buka scanner
+    setTimeout(() => {
+      tg.showScanQrPopup({ text: 'Scan QR dari grup monitor' }, (text) => {
+        const m = text && text.match(/qr_(\d+)_([a-f0-9]+)/);
+        if (!m) {
+          setErr('QR tidak dikenali. Pastikan scan QR dari grup monitor.');
+          return false;
+        }
+        tg.closeScanQrPopup();
+        act('/break-end-qr', { break_id: parseInt(m[1]), qr_token: m[2] });
+        return true;
+      });
+    }, 800);
   };
 
   if (loading) return <div style={{padding:24,textAlign:'center'}}>Loading…</div>;
