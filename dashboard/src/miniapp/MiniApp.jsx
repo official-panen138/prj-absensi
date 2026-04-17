@@ -161,21 +161,22 @@ export default function MiniApp() {
         const fmt = (s) => `${Math.floor(Math.abs(s) / 60)}m ${String(Math.abs(s) % 60).padStart(2, '0')}s`;
         const barColor = overtime ? '#ef4444' : pct > 80 ? '#fbbf24' : '#34d399';
         const textColor = overtime ? '#fca5a5' : pct > 80 ? '#fbbf24' : '#34d399';
+        const sign = remainingSec < 0 ? '-' : '';
         return (
           <>
             <div style={{padding:'14px 12px',background:'rgb(31 41 55)',border:`1px solid ${overtime ? 'rgba(239,68,68,0.5)' : 'rgb(55 65 81)'}`,borderRadius:12,marginBottom:14}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
-                <span style={{fontSize:11,color:'#9ca3af',letterSpacing:1}}>{overtime ? 'OVERTIME' : 'TIME ELAPSED'}</span>
-                <span style={{fontFamily:'monospace',fontWeight:700,fontSize:20,color:textColor}}>
-                  {overtime ? '+' : ''}{fmt(overtime ? -remainingSec : elapsedSec)}
+                <span style={{fontSize:11,color:'#9ca3af',letterSpacing:1}}>{overtime ? 'OVERTIME' : 'SISA WAKTU'}</span>
+                <span style={{fontFamily:'monospace',fontWeight:700,fontSize:22,color:textColor}}>
+                  {sign}{fmt(remainingSec)}
                 </span>
               </div>
               <div style={{height:6,background:'rgb(55 65 81)',borderRadius:3,overflow:'hidden'}}>
                 <div style={{height:'100%',width:`${pct}%`,background:barColor,transition:'width .5s'}} />
               </div>
               <div style={{display:'flex',justifyContent:'space-between',marginTop:6,fontSize:10,color:'#6b7280',fontFamily:'monospace'}}>
-                <span>{fmt(elapsedSec)} elapsed</span>
-                <span>limit: {att.break_limit}m</span>
+                <span>{fmt(elapsedSec)} terpakai</span>
+                <span>kuota: {att.break_limit}m</span>
               </div>
               {overtime && <div style={{marginTop:8,padding:'6px 10px',background:'rgba(239,68,68,0.15)',color:'#fca5a5',borderRadius:6,fontSize:11,textAlign:'center'}}>⚠ Anda melewati batas waktu break</div>}
             </div>
