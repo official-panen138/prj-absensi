@@ -29,6 +29,16 @@ function findStaffByTelegramId(tgId) {
   return db.prepare('SELECT * FROM staff WHERE telegram_id = ?').get(String(tgId));
 }
 
+function getAdminChatIds() {
+  const env = process.env.TELEGRAM_ADMIN_CHAT_IDS;
+  if (env) return env.split(',').map((s) => s.trim()).filter(Boolean);
+  return (getSetting('telegram_admin_chat_ids', []) || []).map(String);
+}
+
+function isAdmin(tgId) {
+  return getAdminChatIds().includes(String(tgId));
+}
+
 function attachHandlers(bot) {
   bot.use(session({ initial: () => ({ step: null, form: {} }) }));
 
@@ -101,9 +111,10 @@ function attachHandlers(bot) {
       if (ans !== 'yes' && ans !== 'y') return ctx.reply('Ketik *YES* atau *NO*.', { parse_mode: 'Markdown' });
 
       const today = new Date().toISOString().slice(0, 10);
-      db.prepare(`INSERT INTO staff(name,category,current_shift,department,telegram_id,telegram_username,join_date,is_active,is_approved)
+      const ins = db.prepare(`INSERT INTO staff(name,category,current_shift,department,telegram_id,telegram_username,join_date,is_active,is_approved)
                   VALUES(?,?,?,?,?,?,?,1,0)`)
         .run(s.form.name, s.form.category, 'morning', s.form.department, String(ctx.from.id), ctx.from.username || null, today);
+      const newStaffId = ins.lastInsertRowid;
 
       ctx.session = { step: null, form: {} };
       await ctx.reply(
@@ -111,19 +122,49 @@ function attachHandlers(bot) {
         { parse_mode: 'Markdown', reply_markup: openMiniAppKeyboard() }
       );
 
-      const adminsEnv = process.env.TELEGRAM_ADMIN_CHAT_IDS;
-      const admins = adminsEnv
-        ? adminsEnv.split(',').map((s) => s.trim()).filter(Boolean)
-        : (getSetting('telegram_admin_chat_ids', []) || []);
       const muted = (getSetting('notification_prefs', {}) || {}).muted_types || [];
       if (!muted.includes('new_registration')) {
-        for (const chatId of admins) {
+        const kb = new InlineKeyboard()
+          .text('✅ Approve', `approve_${newStaffId}`)
+          .text('❌ Reject', `reject_${newStaffId}`);
+        const tgUser = ctx.from.username ? `@${ctx.from.username}` : `id ${ctx.from.id}`;
+        const text = `🆕 *New registration:*\n👤 ${s.form.name}\n🌏 ${s.form.category_label}\n🏢 ${s.form.department}\n💬 ${tgUser}`;
+        for (const chatId of getAdminChatIds()) {
           try {
-            await bot.api.sendMessage(chatId, `🆕 *New registration:*\n${s.form.name} (${s.form.category_label}) — ${s.form.department}\n\nApprove di dashboard.`, { parse_mode: 'Markdown' });
+            await bot.api.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: kb });
           } catch (e) { console.warn('[bot] notify admin failed:', e.message); }
         }
       }
     }
+  });
+
+  bot.callbackQuery(/^approve_(\d+)$/, async (ctx) => {
+    const staffId = parseInt(ctx.match[1]);
+    if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery({ text: '⛔ Unauthorized', show_alert: true });
+    const staff = db.prepare('SELECT * FROM staff WHERE id = ?').get(staffId);
+    if (!staff) return ctx.answerCallbackQuery({ text: 'Staff tidak ditemukan', show_alert: true });
+    if (staff.is_approved) return ctx.answerCallbackQuery({ text: 'Sudah di-approve sebelumnya', show_alert: true });
+    db.prepare('UPDATE staff SET is_approved = 1 WHERE id = ?').run(staffId);
+    if (staff.telegram_id) await notifyApproved(staff.telegram_id, staff.name);
+    const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
+    await ctx.editMessageText(`✅ *${staff.name}* APPROVED\n_oleh ${by}_`, { parse_mode: 'Markdown' });
+    await ctx.answerCallbackQuery({ text: '✅ Approved!' });
+  });
+
+  bot.callbackQuery(/^reject_(\d+)$/, async (ctx) => {
+    const staffId = parseInt(ctx.match[1]);
+    if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery({ text: '⛔ Unauthorized', show_alert: true });
+    const staff = db.prepare('SELECT * FROM staff WHERE id = ?').get(staffId);
+    if (!staff) return ctx.answerCallbackQuery({ text: 'Staff tidak ditemukan', show_alert: true });
+    db.prepare('UPDATE staff SET is_active = 0 WHERE id = ?').run(staffId);
+    if (staff.telegram_id) {
+      try {
+        await bot.api.sendMessage(staff.telegram_id, `❌ Maaf ${staff.name}, registrasi Anda *ditolak* oleh admin.\n\nHubungi admin untuk info lebih lanjut.`, { parse_mode: 'Markdown' });
+      } catch {}
+    }
+    const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
+    await ctx.editMessageText(`❌ *${staff.name}* REJECTED\n_oleh ${by}_`, { parse_mode: 'Markdown' });
+    await ctx.answerCallbackQuery({ text: '❌ Rejected' });
   });
 
   bot.catch((err) => console.error('[bot] error:', err.error?.message || err));
