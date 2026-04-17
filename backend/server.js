@@ -616,7 +616,9 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
   const limit = bs?.daily_quota_minutes || 15;
   const now = new Date();
   const qrToken = crypto.randomBytes(8).toString('hex');
-  const qrExp = new Date(now.getTime() + 5 * 60000).toISOString();
+  // QR valid sampai 24 jam (atau sampai break end_time, mana yg duluan)
+  // Ini supaya staff yang overtime tetap bisa back-to-work
+  const qrExp = new Date(now.getTime() + 24 * 60 * 60000).toISOString();
   const r = db.prepare('INSERT INTO break_log(attendance_id,staff_id,type,start_time,limit_minutes,qr_token,qr_expires_at) VALUES(?,?,?,?,?,?,?)')
     .run(att.id, req.staff.id, type, now.toISOString(), limit, qrToken, qrExp);
   const statusMap = { smoke: 'smoking', toilet: 'toilet', outside: 'outside' };

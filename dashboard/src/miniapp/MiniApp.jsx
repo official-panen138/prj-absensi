@@ -185,6 +185,17 @@ export default function MiniApp() {
               ⏱ Break aktif. Klik tombol di bawah → kamera akan terbuka untuk scan QR di grup monitor.
             </div>
             <Btn color="emerald" onClick={scanQrAndEnd}>📷 Scan QR — Back to Work</Btn>
+            <button
+              onClick={() => act('/break-end')}
+              disabled={busy}
+              style={{
+                width:'100%',padding:'10px',marginTop:4,background:'transparent',
+                border:'1px solid rgb(75 85 99)',borderRadius:8,color:'#9ca3af',
+                fontSize:12,cursor:'pointer',opacity: busy ? 0.5 : 1
+              }}
+            >
+              End Manual (tanpa QR)
+            </button>
           </>
         );
       })()}
