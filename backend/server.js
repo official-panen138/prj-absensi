@@ -578,25 +578,33 @@ function dateRange(ym, from, to) {
   return { start, end };
 }
 
+function deptFilterSql(req, alias = 's.department') {
+  const dept = req.query.department ? String(req.query.department) : null;
+  return dept ? { clause: ` AND ${alias} = ?`, params: [dept] } : { clause: '', params: [] };
+}
+
 app.get('/api/reports/monthly/:ym', auth, (req, res) => {
   const { start, end } = dateRange(req.params.ym, req.query.from, req.query.to);
-  const sc = scopeTenant(req);
+  const sc = scopeTenant(req, 's.tenant_id');
+  const df = deptFilterSql(req);
   const row = db.prepare(`
-    SELECT COUNT(DISTINCT staff_id) AS unique_staff,
+    SELECT COUNT(DISTINCT a.staff_id) AS unique_staff,
            COUNT(*) AS total_records,
-           COALESCE(SUM(total_work_minutes),0) AS total_work_minutes,
-           COALESCE(SUM(total_break_minutes),0) AS total_break_minutes,
-           COALESCE(SUM(late_minutes),0) AS total_late_minutes,
-           COALESCE(SUM(break_violations),0) AS total_break_violations,
-           COALESCE(AVG(productive_ratio),0) AS avg_productive_ratio
-    FROM attendance WHERE date BETWEEN ? AND ?${sc.clause}
-  `).get(start, end, ...sc.params);
+           COALESCE(SUM(a.total_work_minutes),0) AS total_work_minutes,
+           COALESCE(SUM(a.total_break_minutes),0) AS total_break_minutes,
+           COALESCE(SUM(a.late_minutes),0) AS total_late_minutes,
+           COALESCE(SUM(a.break_violations),0) AS total_break_violations,
+           COALESCE(AVG(a.productive_ratio),0) AS avg_productive_ratio
+    FROM attendance a JOIN staff s ON s.id = a.staff_id
+    WHERE a.date BETWEEN ? AND ?${sc.clause}${df.clause}
+  `).get(start, end, ...sc.params, ...df.params);
   ok(res, row);
 });
 
 app.get('/api/reports/attendance/:ym', auth, (req, res) => {
   const { start, end } = dateRange(req.params.ym, req.query.from, req.query.to);
   const sc = scopeTenant(req, 's.tenant_id');
+  const df = deptFilterSql(req);
   const rows = db.prepare(`
     SELECT s.id AS staff_id, s.name, s.department, s.current_shift,
            COUNT(DISTINCT CASE WHEN a.clock_in IS NOT NULL THEN a.date END) AS days_present,
@@ -608,29 +616,31 @@ app.get('/api/reports/attendance/:ym', auth, (req, res) => {
     FROM staff s
     LEFT JOIN attendance a ON a.staff_id = s.id AND a.date BETWEEN ? AND ?
     LEFT JOIN schedule_daily sd ON sd.staff_id = s.id AND sd.date BETWEEN ? AND ?
-    WHERE s.is_active = 1${sc.clause}
+    WHERE s.is_active = 1${sc.clause}${df.clause}
     GROUP BY s.id
-    ORDER BY s.name
-  `).all(start, end, start, end, ...sc.params);
+    ORDER BY s.department, s.name
+  `).all(start, end, start, end, ...sc.params, ...df.params);
   ok(res, rows);
 });
 
 app.get('/api/reports/violations/:ym', auth, (req, res) => {
   const { start, end } = dateRange(req.params.ym, req.query.from, req.query.to);
   const sc = scopeTenant(req, 's.tenant_id');
+  const df = deptFilterSql(req);
   const rows = db.prepare(`
     SELECT s.name, s.department, bl.type, bl.duration_minutes, bl.limit_minutes, DATE(bl.start_time) AS date
     FROM break_log bl
     JOIN staff s ON s.id = bl.staff_id
-    WHERE bl.is_overtime = 1 AND DATE(bl.start_time) BETWEEN ? AND ?${sc.clause}
+    WHERE bl.is_overtime = 1 AND DATE(bl.start_time) BETWEEN ? AND ?${sc.clause}${df.clause}
     ORDER BY bl.start_time DESC
-  `).all(start, end, ...sc.params);
+  `).all(start, end, ...sc.params, ...df.params);
   ok(res, rows);
 });
 
 app.get('/api/reports/productivity/:ym', auth, (req, res) => {
   const { start, end } = dateRange(req.params.ym, req.query.from, req.query.to);
   const sc = scopeTenant(req, 's.tenant_id');
+  const df = deptFilterSql(req);
   const rows = db.prepare(`
     SELECT s.id AS staff_id, s.name, s.department, s.current_shift,
            COUNT(DISTINCT a.date) AS days_worked,
@@ -640,16 +650,17 @@ app.get('/api/reports/productivity/:ym', auth, (req, res) => {
            COALESCE(SUM(a.break_violations),0) AS overtime_breaks
     FROM staff s
     LEFT JOIN attendance a ON a.staff_id = s.id AND a.date BETWEEN ? AND ?
-    WHERE s.is_active = 1${sc.clause}
+    WHERE s.is_active = 1${sc.clause}${df.clause}
     GROUP BY s.id
     ORDER BY avg_productive_ratio DESC
-  `).all(start, end, ...sc.params);
+  `).all(start, end, ...sc.params, ...df.params);
   ok(res, rows);
 });
 
 app.get('/api/reports/export/:ym', auth, async (req, res) => {
   const { start, end } = dateRange(req.params.ym, req.query.from, req.query.to);
   const sc = scopeTenant(req, 's.tenant_id');
+  const df = deptFilterSql(req);
   const rows = db.prepare(`
     SELECT s.name, s.department, s.current_shift,
            COUNT(DISTINCT CASE WHEN a.clock_in IS NOT NULL THEN a.date END) AS days_present,
@@ -658,15 +669,17 @@ app.get('/api/reports/export/:ym', auth, async (req, res) => {
            COALESCE(AVG(a.productive_ratio),0) AS avg_productive_ratio
     FROM staff s
     LEFT JOIN attendance a ON a.staff_id = s.id AND a.date BETWEEN ? AND ?
-    WHERE s.is_active = 1${sc.clause}
+    WHERE s.is_active = 1${sc.clause}${df.clause}
     GROUP BY s.id
-  `).all(start, end, ...sc.params);
+    ORDER BY s.department, s.name
+  `).all(start, end, ...sc.params, ...df.params);
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Report');
   ws.addRow(['Name', 'Dept', 'Shift', 'Days Present', 'Work (min)', 'Break (min)', 'Avg Productive %']);
   rows.forEach((r) => ws.addRow([r.name, r.department, r.current_shift, r.days_present, r.total_work_minutes, r.total_break_minutes, Number(r.avg_productive_ratio).toFixed(1)]));
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename=report-${req.params.ym}.xlsx`);
+  const deptSuffix = req.query.department ? `-${String(req.query.department).replace(/\s+/g, '_')}` : '';
+  res.setHeader('Content-Disposition', `attachment; filename=report-${req.params.ym}${deptSuffix}.xlsx`);
   await wb.xlsx.write(res);
   res.end();
 });

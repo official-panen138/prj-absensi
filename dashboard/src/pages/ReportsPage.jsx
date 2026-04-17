@@ -28,6 +28,7 @@ export default function ReportsPage({ token }) {
   const [data, setData] = useState({});
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
+  const [deptFilter, setDeptFilter] = useState('');
 
   const weeks = useMemo(() => getWeeksOfMonth(month), [month]);
 
@@ -60,7 +61,11 @@ export default function ReportsPage({ token }) {
   const fetchReport = useCallback(async () => {
     setLoading(true);
     try {
-      const qs = (periodFrom && periodTo) ? `?from=${periodFrom}&to=${periodTo}` : '';
+      const params = new URLSearchParams();
+      if (periodFrom) params.set('from', periodFrom);
+      if (periodTo) params.set('to', periodTo);
+      if (deptFilter) params.set('department', deptFilter);
+      const qs = params.toString() ? `?${params.toString()}` : '';
       const [summary, attendance, violations, productivity] = await Promise.all([
         apiFetch(token, `/reports/monthly/${month}${qs}`),
         apiFetch(token, `/reports/attendance/${month}${qs}`),
@@ -69,7 +74,7 @@ export default function ReportsPage({ token }) {
       ]);
       setData({ summary: summary.data, attendance: attendance.data, violations: violations.data, productivity: productivity.data });
     } catch (e) { setToast({ type: 'error', text: e.message }); } finally { setLoading(false); }
-  }, [token, month, periodFrom, periodTo]);
+  }, [token, month, periodFrom, periodTo, deptFilter]);
 
   useEffect(() => { fetchReport(); }, [fetchReport]);
 
@@ -78,6 +83,7 @@ export default function ReportsPage({ token }) {
       const params = new URLSearchParams();
       if (periodFrom) params.set('from', periodFrom);
       if (periodTo) params.set('to', periodTo);
+      if (deptFilter) params.set('department', deptFilter);
       const qs = params.toString() ? `?${params.toString()}` : '';
       const res = await fetch(`${API_BASE}/reports/export/${month}${qs}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error('Export failed');
@@ -85,7 +91,8 @@ export default function ReportsPage({ token }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `workforce-report-${periodLabel}.xlsx`;
+      const deptSuffix = deptFilter ? `-${deptFilter.replace(/\s+/g, '_')}` : '';
+      a.download = `workforce-report-${periodLabel}${deptSuffix}.xlsx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -108,10 +115,31 @@ export default function ReportsPage({ token }) {
         <h1 className="text-xl lg:text-2xl font-extrabold">Reports</h1>
         <div className="flex flex-wrap gap-2.5 items-center">
           <MonthPicker value={month} onChange={setMonth} />
+          {(() => {
+            const allRows = [...(data.attendance || []), ...(data.productivity || [])];
+            const depts = [...new Set(allRows.map((r) => r.department).filter(Boolean))].sort();
+            return (
+              <select
+                value={deptFilter}
+                onChange={(e) => setDeptFilter(e.target.value)}
+                className="bg-gray-800 border border-gray-700 text-gray-100 text-xs rounded-md px-2.5 py-1.5 focus:outline-none focus:border-emerald-500"
+                title="Filter laporan per department"
+              >
+                <option value="">🌐 All Departments</option>
+                {depts.map((d) => <option key={d} value={d}>🏢 {d}</option>)}
+              </select>
+            );
+          })()}
           <Btn size="sm" variant="ghost" onClick={fetchReport}>↻</Btn>
           <Btn size="sm" variant="success" onClick={exportXlsx}>Export</Btn>
         </div>
       </div>
+
+      {deptFilter && (
+        <div className="mb-3 px-3 py-2 bg-emerald-500/10 border border-emerald-500/30 rounded-md text-[11px] text-emerald-400">
+          🏢 Laporan difilter untuk department <strong>{deptFilter}</strong> — Export akan hanya berisi data ini
+        </div>
+      )}
 
       {/* Period selector */}
       <div className="flex flex-wrap gap-2 items-center mb-4">
