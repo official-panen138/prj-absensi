@@ -1,55 +1,62 @@
 import { Bot, InlineKeyboard, InputFile, session } from 'grammy';
 import crypto from 'node:crypto';
 import QRCode from 'qrcode';
-import { db, getSetting, getTenantSetting, getDefaultTenantId } from './db.js';
+import { db, getTenantSetting, getDefaultTenantId } from './db.js';
 
 const DEPARTMENTS = ['Customer Service', 'Finance', 'Captain', 'SEO Marketing', 'Social Media Marketing', 'CRM', 'Telemarketing'];
 const CATEGORIES = [{ key: 'indonesian', label: 'Indonesian' }, { key: 'local', label: 'Cambodian' }];
 
-let currentBot = null;
-let currentInfo = null;
-let currentToken = null;
+// Map tenant_id → { bot, info, token }
+const runningBots = new Map();
 
-function readConfig(tenantId) {
-  const tid = tenantId || getDefaultTenantId();
-  const cfg = (tid ? getTenantSetting(tid, 'bot_config', {}) : getSetting('bot_config', {})) || {};
-  // Priority: env var > DB setting. Env vars in Railway survive DB resets.
+function readTenantConfig(tenantId) {
+  const cfg = getTenantSetting(tenantId, 'bot_config', {}) || {};
+  // Env vars only apply to default tenant (backward compat)
+  const isDefault = tenantId === getDefaultTenantId();
   return {
-    token: (process.env.BOT_TOKEN || cfg.bot_token || '').trim() || null,
-    monitorGroupId: (process.env.MONITOR_GROUP_CHAT_ID || cfg.monitor_group_chat_id || '').toString().trim() || null,
-    miniappUrl: (process.env.MINIAPP_URL || cfg.miniapp_url || '').trim() || 'http://localhost:5173/miniapp',
+    tenantId,
+    token: ((isDefault && process.env.BOT_TOKEN) || cfg.bot_token || '').trim() || null,
+    monitorGroupId: ((isDefault && process.env.MONITOR_GROUP_CHAT_ID) || cfg.monitor_group_chat_id || '').toString().trim() || null,
+    miniappUrl: ((isDefault && process.env.MINIAPP_URL) || cfg.miniapp_url || '').trim() || 'http://localhost:5173/miniapp',
   };
 }
 
-function openMiniAppKeyboard() {
-  const { miniappUrl } = readConfig();
+function openMiniAppKeyboard(tenantId) {
+  const { miniappUrl } = readTenantConfig(tenantId);
   return new InlineKeyboard().webApp('⚡ Open WMS', miniappUrl);
 }
 
-function findStaffByTelegramId(tgId) {
-  return db.prepare('SELECT * FROM staff WHERE telegram_id = ?').get(String(tgId));
+function findStaffByTelegramId(tenantId, tgId) {
+  return db.prepare('SELECT * FROM staff WHERE tenant_id = ? AND telegram_id = ?').get(tenantId, String(tgId));
 }
 
-function getAdminChatIds() {
-  const env = process.env.TELEGRAM_ADMIN_CHAT_IDS;
-  if (env) return env.split(',').map((s) => s.trim()).filter(Boolean);
-  return (getSetting('telegram_admin_chat_ids', []) || []).map(String);
+function getAdminChatIds(tenantId) {
+  // For default tenant, also check env
+  if (tenantId === getDefaultTenantId() && process.env.TELEGRAM_ADMIN_CHAT_IDS) {
+    return process.env.TELEGRAM_ADMIN_CHAT_IDS.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  return (getTenantSetting(tenantId, 'telegram_admin_chat_ids', []) || []).map(String);
 }
 
-function isAdmin(tgId) {
-  return getAdminChatIds().includes(String(tgId));
+function isAdmin(tenantId, tgId) {
+  return getAdminChatIds(tenantId).includes(String(tgId));
 }
 
-function attachHandlers(bot) {
+function getRegistrationPin(tenantId) {
+  if (tenantId === getDefaultTenantId() && process.env.REGISTRATION_PIN) return process.env.REGISTRATION_PIN;
+  return String(getTenantSetting(tenantId, 'registration_pin', '1234'));
+}
+
+function attachHandlers(bot, tenantId) {
   bot.use(session({ initial: () => ({ step: null, form: {} }) }));
 
   bot.command('start', async (ctx) => {
     const payload = ctx.match;
-    if (payload && payload.startsWith('qr_')) return handleQrScan(ctx, payload);
+    if (payload && payload.startsWith('qr_')) return handleQrScan(ctx, tenantId, payload);
 
-    const staff = findStaffByTelegramId(ctx.from.id);
+    const staff = findStaffByTelegramId(tenantId, ctx.from.id);
     if (staff && staff.is_approved) {
-      return ctx.reply(`Hi ${staff.name}! Tap below to open WMS.`, { reply_markup: openMiniAppKeyboard() });
+      return ctx.reply(`Hi ${staff.name}! Tap below to open WMS.`, { reply_markup: openMiniAppKeyboard(tenantId) });
     }
     if (staff && !staff.is_approved) {
       return ctx.reply(`⏳ Halo ${staff.name}, akun Anda menunggu persetujuan admin.`);
@@ -62,13 +69,13 @@ function attachHandlers(bot) {
   bot.on('message:text', async (ctx) => {
     const txt = ctx.message.text.trim();
     const s = ctx.session;
-    const existing = findStaffByTelegramId(ctx.from.id);
+    const existing = findStaffByTelegramId(tenantId, ctx.from.id);
     if (existing && existing.is_approved && !s.step) {
-      return ctx.reply('Tap below to open WMS.', { reply_markup: openMiniAppKeyboard() });
+      return ctx.reply('Tap below to open WMS.', { reply_markup: openMiniAppKeyboard(tenantId) });
     }
 
     if (s.step === 'pin') {
-      const expected = String(process.env.REGISTRATION_PIN || getSetting('registration_pin', '1234'));
+      const expected = getRegistrationPin(tenantId);
       if (txt !== expected) return ctx.reply('❌ PIN salah. Coba lagi atau hubungi admin.');
       s.step = 'name';
       return ctx.reply('✅ PIN benar.\n\nMasukkan *nama lengkap* Anda:', { parse_mode: 'Markdown' });
@@ -112,25 +119,25 @@ function attachHandlers(bot) {
       if (ans !== 'yes' && ans !== 'y') return ctx.reply('Ketik *YES* atau *NO*.', { parse_mode: 'Markdown' });
 
       const today = new Date().toISOString().slice(0, 10);
-      const ins = db.prepare(`INSERT INTO staff(name,category,current_shift,department,telegram_id,telegram_username,join_date,is_active,is_approved)
-                  VALUES(?,?,?,?,?,?,?,1,0)`)
-        .run(s.form.name, s.form.category, 'morning', s.form.department, String(ctx.from.id), ctx.from.username || null, today);
+      const ins = db.prepare(`INSERT INTO staff(tenant_id,name,category,current_shift,department,telegram_id,telegram_username,join_date,is_active,is_approved)
+                  VALUES(?,?,?,?,?,?,?,?,1,0)`)
+        .run(tenantId, s.form.name, s.form.category, 'morning', s.form.department, String(ctx.from.id), ctx.from.username || null, today);
       const newStaffId = ins.lastInsertRowid;
 
       ctx.session = { step: null, form: {} };
       await ctx.reply(
         `✅ *Registration successful!*\n\nYour account has been submitted for admin approval.\n\n⏳ Please wait for the approval notification.\nOnce approved, tap ⚡ *Open WMS* below to START.`,
-        { parse_mode: 'Markdown', reply_markup: openMiniAppKeyboard() }
+        { parse_mode: 'Markdown', reply_markup: openMiniAppKeyboard(tenantId) }
       );
 
-      const muted = (getSetting('notification_prefs', {}) || {}).muted_types || [];
+      const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
       if (!muted.includes('new_registration')) {
         const kb = new InlineKeyboard()
           .text('✅ Approve', `approve_${newStaffId}`)
           .text('❌ Reject', `reject_${newStaffId}`);
         const tgUser = ctx.from.username ? `@${ctx.from.username}` : `id ${ctx.from.id}`;
         const text = `🆕 *New registration:*\n👤 ${s.form.name}\n🌏 ${s.form.category_label}\n🏢 ${s.form.department}\n💬 ${tgUser}`;
-        for (const chatId of getAdminChatIds()) {
+        for (const chatId of getAdminChatIds(tenantId)) {
           try {
             await bot.api.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: kb });
           } catch (e) { console.warn('[bot] notify admin failed:', e.message); }
@@ -141,12 +148,12 @@ function attachHandlers(bot) {
 
   bot.callbackQuery(/^approve_(\d+)$/, async (ctx) => {
     const staffId = parseInt(ctx.match[1]);
-    if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery({ text: '⛔ Unauthorized', show_alert: true });
-    const staff = db.prepare('SELECT * FROM staff WHERE id = ?').get(staffId);
+    if (!isAdmin(tenantId, ctx.from.id)) return ctx.answerCallbackQuery({ text: '⛔ Unauthorized', show_alert: true });
+    const staff = db.prepare('SELECT * FROM staff WHERE id = ? AND tenant_id = ?').get(staffId, tenantId);
     if (!staff) return ctx.answerCallbackQuery({ text: 'Staff tidak ditemukan', show_alert: true });
     if (staff.is_approved) return ctx.answerCallbackQuery({ text: 'Sudah di-approve sebelumnya', show_alert: true });
     db.prepare('UPDATE staff SET is_approved = 1 WHERE id = ?').run(staffId);
-    if (staff.telegram_id) await notifyApproved(staff.telegram_id, staff.name);
+    if (staff.telegram_id) await notifyApproved(tenantId, staff.telegram_id, staff.name);
     const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
     await ctx.editMessageText(`✅ *${staff.name}* APPROVED\n_oleh ${by}_`, { parse_mode: 'Markdown' });
     await ctx.answerCallbackQuery({ text: '✅ Approved!' });
@@ -154,8 +161,8 @@ function attachHandlers(bot) {
 
   bot.callbackQuery(/^reject_(\d+)$/, async (ctx) => {
     const staffId = parseInt(ctx.match[1]);
-    if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery({ text: '⛔ Unauthorized', show_alert: true });
-    const staff = db.prepare('SELECT * FROM staff WHERE id = ?').get(staffId);
+    if (!isAdmin(tenantId, ctx.from.id)) return ctx.answerCallbackQuery({ text: '⛔ Unauthorized', show_alert: true });
+    const staff = db.prepare('SELECT * FROM staff WHERE id = ? AND tenant_id = ?').get(staffId, tenantId);
     if (!staff) return ctx.answerCallbackQuery({ text: 'Staff tidak ditemukan', show_alert: true });
     db.prepare('UPDATE staff SET is_active = 0 WHERE id = ?').run(staffId);
     if (staff.telegram_id) {
@@ -171,12 +178,12 @@ function attachHandlers(bot) {
   bot.catch((err) => console.error('[bot] error:', err.error?.message || err));
 }
 
-async function handleQrScan(ctx, payload) {
+async function handleQrScan(ctx, tenantId, payload) {
   const m = payload.match(/^qr_(\d+)_([a-f0-9]+)$/);
   if (!m) return ctx.reply('❌ QR tidak valid.');
   const breakId = parseInt(m[1]);
   const token = m[2];
-  const bl = db.prepare('SELECT * FROM break_log WHERE id = ?').get(breakId);
+  const bl = db.prepare('SELECT * FROM break_log WHERE id = ? AND tenant_id = ?').get(breakId, tenantId);
   if (!bl) return ctx.reply('❌ QR tidak ditemukan.');
   if (bl.qr_token !== token) return ctx.reply('❌ QR token tidak cocok.');
   if (bl.end_time) return ctx.reply('ℹ️ Break sudah selesai sebelumnya.');
@@ -194,122 +201,150 @@ async function handleQrScan(ctx, payload) {
     .run('working', bl.staff_id, new Date().toISOString().slice(0, 10));
 
   if (overtime) {
-    notifyOvertime({ name: staff.name, department: staff.department }, bl.type, dur, bl.limit_minutes).catch(() => {});
+    notifyOvertime(tenantId, { name: staff.name, department: staff.department }, bl.type, dur, bl.limit_minutes).catch(() => {});
   }
 
-  return ctx.reply(`✅ Welcome back, ${staff.name}! Break: ${dur}m${overtime ? ' ⚠️ overtime' : ''}.`, { reply_markup: openMiniAppKeyboard() });
+  return ctx.reply(`✅ Welcome back, ${staff.name}! Break: ${dur}m${overtime ? ' ⚠️ overtime' : ''}.`, { reply_markup: openMiniAppKeyboard(tenantId) });
 }
 
 // ============ Public API ============
+async function stopTenantBot(tenantId) {
+  const entry = runningBots.get(tenantId);
+  if (!entry) return;
+  try { await entry.bot.stop(); } catch {}
+  runningBots.delete(tenantId);
+}
+
 export async function reloadBot(tenantId) {
-  const { token } = readConfig(tenantId);
-  if (currentBot && currentToken === token) return { changed: false, ...getBotStatus() };
-  if (currentBot) {
-    try { await currentBot.stop(); } catch {}
-    currentBot = null; currentInfo = null; currentToken = null;
-  }
+  const tid = tenantId || getDefaultTenantId();
+  if (!tid) return { running: false, error: 'No tenant' };
+  const { token } = readTenantConfig(tid);
+  const existing = runningBots.get(tid);
+
+  if (existing && existing.token === token) return { changed: false, running: true, username: existing.info?.username };
+  if (existing) await stopTenantBot(tid);
+
   if (!token) {
-    console.log('[bot] no token configured');
+    console.log(`[bot] tenant ${tid}: no token configured`);
     return { changed: true, running: false };
   }
   try {
     const newBot = new Bot(token);
-    attachHandlers(newBot);
+    attachHandlers(newBot, tid);
     const info = await newBot.api.getMe();
     await newBot.api.deleteWebhook({ drop_pending_updates: false });
-    newBot.start({ drop_pending_updates: false, onStart: () => console.log(`[bot] @${info.username} ready`) });
-    currentBot = newBot;
-    currentInfo = info;
-    currentToken = token;
+    newBot.start({ drop_pending_updates: false, onStart: () => console.log(`[bot] tenant ${tid}: @${info.username} ready`) });
+    runningBots.set(tid, { bot: newBot, info, token });
     return { changed: true, running: true, username: info.username };
   } catch (e) {
-    console.error('[bot] reload failed:', e.message);
-    currentBot = null; currentInfo = null; currentToken = null;
+    console.error(`[bot] tenant ${tid} reload failed:`, e.message);
     return { changed: true, running: false, error: e.message };
   }
 }
 
 export function getBotStatus(tenantId) {
-  const cfg = readConfig(tenantId);
+  const tid = tenantId || getDefaultTenantId();
+  const entry = runningBots.get(tid);
+  const cfg = readTenantConfig(tid);
   return {
-    running: !!currentBot,
-    username: currentInfo?.username || null,
-    has_token: !!currentToken,
+    running: !!entry,
+    username: entry?.info?.username || null,
+    has_token: !!cfg.token,
     monitor_group_set: !!cfg.monitorGroupId,
     miniapp_url: cfg.miniappUrl,
+    tenant_id: tid,
   };
 }
 
-async function notifyMonitor(text) {
-  if (!currentBot) return;
-  const { monitorGroupId } = readConfig();
+export async function notifyApproved(tenantId, telegramId, name) {
+  const entry = runningBots.get(tenantId);
+  if (!entry || !telegramId) return;
+  try {
+    await entry.bot.api.sendMessage(telegramId, `🎉 Halo *${name}*, akun Anda *telah disetujui*!\n\nTap ⚡ Open WMS di bawah untuk mulai bekerja.`, {
+      parse_mode: 'Markdown',
+      reply_markup: openMiniAppKeyboard(tenantId),
+    });
+  } catch (e) { console.warn('[bot] notifyApproved failed:', e.message); }
+}
+
+export async function pushBreakQRToMonitor(tenantId, breakLog, staff) {
+  const entry = runningBots.get(tenantId);
+  if (!entry) return;
+  const { monitorGroupId } = readTenantConfig(tenantId);
+  if (!monitorGroupId) return;
+  const me = entry.info || (await entry.bot.api.getMe());
+  const deepLink = `https://t.me/${me.username}?start=qr_${breakLog.id}_${breakLog.qr_token}`;
+  const png = await QRCode.toBuffer(deepLink, { width: 320, margin: 2 });
+  const breakLabel = { smoke: '🚬 Smoke', toilet: '🚻 Toilet', outside: '🏪 Go Out' }[breakLog.type] || breakLog.type;
+  const caption = `${breakLabel}\n👤 *${staff.name}* — ${staff.department || '-'}\n⏰ Expires in 5 min\n\nScan QR ini untuk Back-to-Work.`;
+  try {
+    await entry.bot.api.sendPhoto(monitorGroupId, new InputFile(png, `qr-${breakLog.id}.png`), { caption, parse_mode: 'Markdown' });
+  } catch (e) { console.warn('[bot] pushBreakQRToMonitor failed:', e.message); }
+}
+
+async function notifyMonitor(tenantId, text) {
+  const entry = runningBots.get(tenantId);
+  if (!entry) return;
+  const { monitorGroupId } = readTenantConfig(tenantId);
   if (!monitorGroupId) return;
   try {
-    await currentBot.api.sendMessage(monitorGroupId, text, { parse_mode: 'Markdown' });
+    await entry.bot.api.sendMessage(monitorGroupId, text, { parse_mode: 'Markdown' });
   } catch (e) { console.warn('[bot] notifyMonitor failed:', e.message); }
 }
 
-export async function notifyLate(staff, lateMin, shift) {
-  const muted = (getSetting('notification_prefs', {}) || {}).muted_types || [];
+export async function notifyLate(tenantId, staff, lateMin, shift) {
+  const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
   if (muted.includes('late')) return;
   const dept = staff.department ? ` · ${staff.department}` : '';
-  await notifyMonitor(`⚠️ *TELAT* — ${staff.name}${dept}\n⏱ ${lateMin} menit · shift _${shift}_`);
+  await notifyMonitor(tenantId, `⚠️ *TELAT* — ${staff.name}${dept}\n⏱ ${lateMin} menit · shift _${shift}_`);
 }
 
-export async function notifyOvertime(staff, breakType, durationMin, limitMin) {
-  const muted = (getSetting('notification_prefs', {}) || {}).muted_types || [];
+export async function notifyOvertime(tenantId, staff, breakType, durationMin, limitMin) {
+  const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
   if (muted.includes('break_overtime')) return;
   const labels = { smoke: '🚬 Smoke', toilet: '🚻 Toilet', outside: '🏪 Go Out' };
   const overMin = Math.max(0, durationMin - limitMin);
   const dept = staff.department ? ` · ${staff.department}` : '';
   await notifyMonitor(
+    tenantId,
     `⏰ *OVERTIME BREAK* — ${staff.name}${dept}\n` +
     `${labels[breakType] || breakType}: *${durationMin}m* / limit ${limitMin}m\n` +
     `Lewat: *+${overMin} menit*`
   );
 }
 
-export async function notifyApproved(telegramId, name) {
-  if (!currentBot || !telegramId) return;
-  try {
-    await currentBot.api.sendMessage(telegramId, `🎉 Halo *${name}*, akun Anda *telah disetujui*!\n\nTap ⚡ Open WMS di bawah untuk mulai bekerja.`, {
-      parse_mode: 'Markdown',
-      reply_markup: openMiniAppKeyboard(),
-    });
-  } catch (e) { console.warn('[bot] notifyApproved failed:', e.message); }
-}
-
-export async function pushBreakQRToMonitor(breakLog, staff) {
-  if (!currentBot) return;
-  const { monitorGroupId } = readConfig();
-  if (!monitorGroupId) return;
-  const me = currentInfo || (await currentBot.api.getMe());
-  const deepLink = `https://t.me/${me.username}?start=qr_${breakLog.id}_${breakLog.qr_token}`;
-  const png = await QRCode.toBuffer(deepLink, { width: 320, margin: 2 });
-  const breakLabel = { smoke: '🚬 Smoke', toilet: '🚻 Toilet', outside: '🏪 Go Out' }[breakLog.type] || breakLog.type;
-  const caption = `${breakLabel}\n👤 *${staff.name}* — ${staff.department || '-'}\n⏰ Expires in 5 min\n\nScan QR ini untuk Back-to-Work.`;
-  try {
-    await currentBot.api.sendPhoto(monitorGroupId, new InputFile(png, `qr-${breakLog.id}.png`), { caption, parse_mode: 'Markdown' });
-  } catch (e) { console.warn('[bot] pushBreakQRToMonitor failed:', e.message); }
-}
-
+// Verify Telegram Mini App initData against ALL running tenant bots
+// Returns { user, tenantId } or null
 export function verifyInitData(initData) {
-  const { token } = readConfig();
-  if (!token || !initData) return null;
+  if (!initData) return null;
   const params = new URLSearchParams(initData);
   const hash = params.get('hash');
   if (!hash) return null;
   params.delete('hash');
   const dataCheckString = [...params.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${v}`).join('\n');
-  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(token).digest();
-  const computed = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-  if (computed !== hash) return null;
-  const userJson = params.get('user');
-  if (!userJson) return null;
-  try { return JSON.parse(userJson); } catch { return null; }
+
+  for (const [tenantId, entry] of runningBots.entries()) {
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(entry.token).digest();
+    const computed = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+    if (computed === hash) {
+      const userJson = params.get('user');
+      if (!userJson) return null;
+      try { return { user: JSON.parse(userJson), tenantId }; } catch { return null; }
+    }
+  }
+  return null;
 }
 
+// Start bots for ALL tenants that have bot_token configured
 export async function startBot() {
-  // Initial boot — reload from current DB settings
-  return reloadBot();
+  const tenants = db.prepare('SELECT id FROM tenants').all();
+  for (const t of tenants) {
+    await reloadBot(t.id);
+  }
+}
+
+export function listRunningBots() {
+  const out = [];
+  for (const [tid, entry] of runningBots.entries()) out.push({ tenant_id: tid, username: entry.info?.username });
+  return out;
 }

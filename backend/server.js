@@ -702,13 +702,14 @@ function tgAuth(req, res, next) {
 
 app.post('/api/bot/auth/telegram', (req, res) => {
   const { initData } = req.body || {};
-  const user = verifyInitData(initData);
-  if (!user) return fail(res, 401, 'Invalid initData');
-  const staff = db.prepare('SELECT * FROM staff WHERE telegram_id = ?').get(String(user.id));
+  const result = verifyInitData(initData);
+  if (!result) return fail(res, 401, 'Invalid initData');
+  const { user, tenantId } = result;
+  const staff = db.prepare('SELECT * FROM staff WHERE tenant_id = ? AND telegram_id = ?').get(tenantId, String(user.id));
   if (!staff) return fail(res, 404, 'Staff not registered. Use /start in bot first.');
   if (!staff.is_approved) return fail(res, 403, 'Akun menunggu persetujuan admin.');
   if (!staff.is_active) return fail(res, 403, 'Akun nonaktif.');
-  const token = jwt.sign({ kind: 'tg', staff_id: staff.id }, JWT_SECRET, { expiresIn: '12h' });
+  const token = jwt.sign({ kind: 'tg', staff_id: staff.id, tenant_id: tenantId }, JWT_SECRET, { expiresIn: '12h' });
   res.json({ token, staff: { id: staff.id, name: staff.name, department: staff.department, current_shift: staff.current_shift } });
 });
 
@@ -737,7 +738,7 @@ app.post('/api/bot/clock-in', tgAuth, (req, res) => {
   db.prepare('INSERT INTO attendance(tenant_id,staff_id,date,shift,clock_in,late_minutes,ip_address,current_status) VALUES(?,?,?,?,?,?,?,?)')
     .run(req.staff.tenant_id, req.staff.id, today, req.staff.current_shift, now.toISOString(), lateMin, String(ip).slice(0, 45), 'working');
   if (lateMin > 0) {
-    notifyLate({ name: req.staff.name, department: req.staff.department }, lateMin, req.staff.current_shift).catch((e) => console.warn('[bot] notifyLate:', e.message));
+    notifyLate(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, lateMin, req.staff.current_shift).catch((e) => console.warn('[bot] notifyLate:', e.message));
   }
   ok(res, { clock_in: now.toISOString(), late_minutes: lateMin });
 });
@@ -787,7 +788,7 @@ app.post('/api/bot/break-request-qr', tgAuth, async (req, res) => {
   const qrExp = new Date(Date.now() + 5 * 60000).toISOString(); // valid 5 menit
   db.prepare('UPDATE break_log SET qr_token = ?, qr_expires_at = ? WHERE id = ?').run(qrToken, qrExp, bl.id);
   const updatedBl = { id: bl.id, type: bl.type, qr_token: qrToken };
-  pushBreakQRToMonitor(updatedBl, req.staff).catch((e) => console.warn('[bot] push QR failed:', e.message));
+  pushBreakQRToMonitor(req.staff.tenant_id, updatedBl, req.staff).catch((e) => console.warn('[bot] push QR failed:', e.message));
   ok(res, { break_id: bl.id, qr_token: qrToken, qr_expires_at: qrExp });
 });
 
@@ -809,7 +810,7 @@ app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
               WHERE staff_id = ? AND date = ?`)
     .run('working', dur, overtime, req.staff.id, todayPP());
   if (overtime) {
-    notifyOvertime({ name: req.staff.name, department: req.staff.department }, bl.type, dur, bl.limit_minutes).catch((e) => console.warn('[bot] notifyOvertime:', e.message));
+    notifyOvertime(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, bl.type, dur, bl.limit_minutes).catch((e) => console.warn('[bot] notifyOvertime:', e.message));
   }
   ok(res, { duration_minutes: dur, is_overtime: !!overtime });
 });
