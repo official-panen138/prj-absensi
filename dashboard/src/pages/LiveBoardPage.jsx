@@ -215,7 +215,17 @@ export default function LiveBoardPage({ token }) {
                           <div className="flex justify-between items-start mb-2">
                             <div>
                               <div className="font-bold text-[13px]">{staff.name}</div>
-                              <div className="text-[11px] text-gray-500">{staff.department}</div>
+                              <div className="text-[11px] text-gray-500">
+                                {staff.department}
+                                {staff.effective_shift && (
+                                  <span className="ml-1.5 text-[10px] font-mono" style={{
+                                    color: staff.effective_shift === 'morning' ? '#34d399' : staff.effective_shift === 'middle' ? '#fbbf24' : '#a78bfa',
+                                  }}>· {staff.effective_shift}</span>
+                                )}
+                                {staff.scheduled_shift && staff.scheduled_shift !== staff.current_shift && (
+                                  <span className="ml-1 text-[9px] text-amber-400">🔄</span>
+                                )}
+                              </div>
                             </div>
                             <div className="flex flex-col items-end gap-1">
                               {isOnline && <div className="w-2 h-2 rounded-full pulse-dot" style={{ color: scHex, backgroundColor: scHex }} />}

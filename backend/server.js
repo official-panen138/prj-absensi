@@ -247,13 +247,19 @@ app.get('/api/activity/live', auth, (req, res) => {
     SELECT s.id, s.tenant_id, s.name, s.department, s.category, s.current_shift,
            a.clock_in, a.clock_out, a.late_minutes, a.current_status,
            a.break_start, a.break_limit,
-           sd.status AS schedule_status
+           sd.status AS schedule_status,
+           sd.shift AS scheduled_shift
     FROM staff s
     LEFT JOIN attendance a ON a.staff_id = s.id AND a.date = ?
     LEFT JOIN schedule_daily sd ON sd.staff_id = s.id AND sd.date = ?
     WHERE s.is_active = 1${sc.clause}
     ORDER BY s.name
   `).all(today, today, ...sc.params);
+
+  // Shift yang efektif hari ini: dari schedule_daily (kalau ada) atau fallback ke current_shift
+  staff.forEach((s) => {
+    s.effective_shift = s.scheduled_shift || s.current_shift;
+  });
 
   // Break quota usage per staff per type hari ini
   const bsc = scopeTenant(req, 's2.tenant_id');
@@ -875,9 +881,18 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
     end: (Array.isArray(mq.end) ? mq.end : []).map((s) => String(s).trim()).filter(Boolean),
   };
 
+  // Today's effective shift: from schedule_daily if exists, else staff default
+  const todayShift = sched?.shift || req.staff.current_shift;
+
   res.json({
     success: true,
-    staff: { id: req.staff.id, name: req.staff.name, department: req.staff.department, current_shift: req.staff.current_shift },
+    staff: {
+      id: req.staff.id,
+      name: req.staff.name,
+      department: req.staff.department,
+      current_shift: req.staff.current_shift,
+      today_shift: todayShift,
+    },
     attendance: att || null,
     schedule: sched || null,
     break_quotas: breakQuotas,
@@ -896,8 +911,16 @@ app.post('/api/bot/clock-in', tgAuth, (req, res) => {
   const today = todayPP();
   const existing = db.prepare('SELECT id FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
   if (existing) return fail(res, 400, 'Sudah clock-in hari ini.');
+
+  // Prefer shift dari schedule_daily hari ini; fallback ke staff.current_shift
+  const sched = db.prepare('SELECT shift, status FROM schedule_daily WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
+  if (sched && ['off', 'sick', 'leave'].includes(sched.status)) {
+    return fail(res, 400, `Jadwal hari ini: ${sched.status.toUpperCase()}. Tidak bisa clock-in.`);
+  }
+  const effectiveShift = sched?.shift || req.staff.current_shift;
+
   const now = new Date();
-  const shiftRow = db.prepare('SELECT start_time FROM shifts WHERE tenant_id = ? AND name = ?').get(req.staff.tenant_id, req.staff.current_shift);
+  const shiftRow = db.prepare('SELECT start_time FROM shifts WHERE tenant_id = ? AND name = ?').get(req.staff.tenant_id, effectiveShift);
   const grace = +(getTenantSetting(req.staff.tenant_id, 'late_grace_minutes', 5));
   let lateMin = 0;
   if (shiftRow?.start_time) {
@@ -907,7 +930,7 @@ app.post('/api/bot/clock-in', tgAuth, (req, res) => {
     if (diff > grace) lateMin = diff;
   }
   db.prepare('INSERT INTO attendance(tenant_id,staff_id,date,shift,clock_in,late_minutes,ip_address,current_status) VALUES(?,?,?,?,?,?,?,?)')
-    .run(req.staff.tenant_id, req.staff.id, today, req.staff.current_shift, now.toISOString(), lateMin, clientIp.slice(0, 45), 'working');
+    .run(req.staff.tenant_id, req.staff.id, today, effectiveShift, now.toISOString(), lateMin, clientIp.slice(0, 45), 'working');
   if (lateMin > 0) {
     notifyLate(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, lateMin, req.staff.current_shift).catch((e) => console.warn('[bot] notifyLate:', e.message));
   }

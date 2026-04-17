@@ -211,7 +211,12 @@ export default function MiniApp() {
 
       <div style={{background:'rgb(31 41 55)',borderRadius:14,padding:16,marginBottom:18,border:'1px solid rgb(55 65 81)'}}>
         <div style={{fontWeight:700,fontSize:15}}>{me?.staff?.name}</div>
-        <div style={{fontSize:12,color:'#9ca3af',marginBottom:8}}>{me?.staff?.department} · {me?.staff?.current_shift}</div>
+        <div style={{fontSize:12,color:'#9ca3af',marginBottom:8}}>
+          {me?.staff?.department} · {me?.staff?.today_shift || me?.staff?.current_shift}
+          {me?.staff?.today_shift && me?.staff?.today_shift !== me?.staff?.current_shift && (
+            <span style={{marginLeft:6,fontSize:10,color:'#fbbf24'}}>(rotasi)</span>
+          )}
+        </div>
         <div style={{fontSize:13,fontWeight:600,color: onBreak ? '#fbbf24' : isWorking ? '#34d399' : '#6b7280'}}>
           {STATUS_LABEL[status] || '⭘ Not Started'}
         </div>
