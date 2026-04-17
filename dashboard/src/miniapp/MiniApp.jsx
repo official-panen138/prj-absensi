@@ -117,7 +117,7 @@ export default function MiniApp() {
   return (
     <div style={{maxWidth:420,margin:'0 auto',padding:'20px 18px',fontFamily:'system-ui,-apple-system,sans-serif',color:'#f3f4f6',minHeight:'100vh',background:'rgb(17 24 39)'}}>
       <div style={{textAlign:'center',marginBottom:18}}>
-        <div style={{fontFamily:'monospace',fontWeight:700,fontSize:14,color:'#34d399',letterSpacing:2}}>S123GROUP</div>
+        <div style={{fontFamily:'monospace',fontWeight:700,fontSize:14,color:'#34d399',letterSpacing:2}}>PNNGROUP</div>
         <div style={{fontSize:11,color:'#6b7280',marginTop:2}}>Workforce Mini App</div>
       </div>
 

@@ -26,7 +26,7 @@ export default function LoginPage({ onLogin }) {
       <div className="w-full max-w-[380px] px-4 animate-fade-in">
         <div className="text-center mb-10">
           <div className="inline-flex items-center justify-center w-[60px] h-[60px] rounded-[14px] border-2 border-emerald-400/25 bg-gradient-to-br from-emerald-500/10 to-transparent mb-4 text-[26px]">⚡</div>
-          <div className="font-mono font-bold text-lg text-emerald-400 tracking-[2px]">S123GROUP</div>
+          <div className="font-mono font-bold text-lg text-emerald-400 tracking-[2px]">PNNGROUP</div>
           <div className="text-gray-500 text-xs mt-1">Workforce Management</div>
         </div>
 

@@ -64,7 +64,7 @@ export default function App() {
     <>
       <div style={{padding:'16px 12px',borderBottom:'1px solid rgb(31 41 55)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
         <div>
-          <div style={{fontFamily:'monospace',fontWeight:700,fontSize:12,color:'#34d399',letterSpacing:1}}>S123GROUP</div>
+          <div style={{fontFamily:'monospace',fontWeight:700,fontSize:12,color:'#34d399',letterSpacing:1}}>PNNGROUP</div>
           <div style={{fontSize:10,color:'#6b7280'}}>Workforce</div>
         </div>
         {isMobile && (
