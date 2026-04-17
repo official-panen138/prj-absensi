@@ -18,6 +18,7 @@ const PORT = process.env.PORT || 8000;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
 const app = express();
+app.set('trust proxy', true); // Railway fronts via proxy; dibutuhkan agar req.ip return IP client asli
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '5mb' }));
 
@@ -780,6 +781,22 @@ app.put('/api/settings/bot-config', auth, async (req, res) => {
 });
 
 // ============ TELEGRAM MINI APP ============
+function normalizeIp(ip) {
+  return String(ip || '').replace(/^::ffff:/, '').trim();
+}
+
+function isIpAllowed(tenantId, ip) {
+  const wl = getTenantSetting(tenantId, 'ip_whitelist', {}) || {};
+  const prefixes = (wl.prefixes || []).map((p) => String(p || '').trim()).filter(Boolean);
+  if (!prefixes.length) return true; // whitelist kosong = fitur mati, semua IP dibolehkan
+  const norm = normalizeIp(ip);
+  return prefixes.some((p) => norm.startsWith(p));
+}
+
+function getClientIp(req) {
+  return normalizeIp(req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip || '');
+}
+
 function tgAuth(req, res, next) {
   const h = req.headers.authorization || '';
   const tok = h.startsWith('Bearer ') ? h.slice(7) : null;
@@ -842,6 +859,10 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
 });
 
 app.post('/api/bot/clock-in', tgAuth, (req, res) => {
+  const clientIp = getClientIp(req);
+  if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
+    return fail(res, 403, `IP Anda (${clientIp}) tidak dalam whitelist kantor. Clock-in hanya bisa dari jaringan kantor.`);
+  }
   const today = todayPP();
   const existing = db.prepare('SELECT id FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
   if (existing) return fail(res, 400, 'Sudah clock-in hari ini.');
@@ -855,9 +876,8 @@ app.post('/api/bot/clock-in', tgAuth, (req, res) => {
     const diff = Math.round((now - shiftStart) / 60000);
     if (diff > grace) lateMin = diff;
   }
-  const ip = req.ip || req.headers['x-forwarded-for'] || '';
   db.prepare('INSERT INTO attendance(tenant_id,staff_id,date,shift,clock_in,late_minutes,ip_address,current_status) VALUES(?,?,?,?,?,?,?,?)')
-    .run(req.staff.tenant_id, req.staff.id, today, req.staff.current_shift, now.toISOString(), lateMin, String(ip).slice(0, 45), 'working');
+    .run(req.staff.tenant_id, req.staff.id, today, req.staff.current_shift, now.toISOString(), lateMin, clientIp.slice(0, 45), 'working');
   if (lateMin > 0) {
     notifyLate(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, lateMin, req.staff.current_shift).catch((e) => console.warn('[bot] notifyLate:', e.message));
   }
@@ -931,6 +951,10 @@ app.post('/api/bot/break-request-qr', tgAuth, async (req, res) => {
 });
 
 app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
+  const clientIp = getClientIp(req);
+  if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
+    return fail(res, 403, `IP Anda (${clientIp}) tidak dalam whitelist kantor. Back to Work hanya bisa dari jaringan kantor.`);
+  }
   const { break_id, qr_token } = req.body || {};
   if (!break_id || !qr_token) return fail(res, 400, 'break_id and qr_token required');
   const bl = db.prepare('SELECT * FROM break_log WHERE id = ?').get(+break_id);
@@ -942,8 +966,7 @@ app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
   const now = new Date();
   const dur = Math.round((now - new Date(bl.start_time)) / 60000);
   const overtime = dur > (bl.limit_minutes || 9999) ? 1 : 0;
-  const ipEnd = String(req.ip || req.headers['x-forwarded-for'] || '').slice(0, 45);
-  db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = ?, is_overtime = ?, ip_address_end = ? WHERE id = ?').run(now.toISOString(), dur, overtime, ipEnd, bl.id);
+  db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = ?, is_overtime = ?, ip_address_end = ? WHERE id = ?').run(now.toISOString(), dur, overtime, clientIp.slice(0, 45), bl.id);
   db.prepare(`UPDATE attendance SET current_status = ?, break_start = NULL, break_type = NULL, break_limit = NULL,
               total_break_minutes = COALESCE(total_break_minutes,0) + ?, break_violations = COALESCE(break_violations,0) + ?
               WHERE staff_id = ? AND date = ?`)
@@ -956,6 +979,10 @@ app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
 });
 
 app.post('/api/bot/break-end', tgAuth, (req, res) => {
+  const clientIp = getClientIp(req);
+  if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
+    return fail(res, 403, `IP Anda (${clientIp}) tidak dalam whitelist kantor. Back to Work hanya bisa dari jaringan kantor.`);
+  }
   const today = todayPP();
   const bl = db.prepare('SELECT * FROM break_log WHERE staff_id = ? AND end_time IS NULL ORDER BY id DESC LIMIT 1').get(req.staff.id);
   if (!bl) return fail(res, 400, 'Tidak ada break aktif.');
@@ -964,8 +991,7 @@ app.post('/api/bot/break-end', tgAuth, (req, res) => {
   const now = new Date();
   const dur = Math.round((now - new Date(bl.start_time)) / 60000);
   const overtime = dur > (bl.limit_minutes || 9999) ? 1 : 0;
-  const ipEnd = String(req.ip || req.headers['x-forwarded-for'] || '').slice(0, 45);
-  db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = ?, is_overtime = ?, ip_address_end = ? WHERE id = ?').run(now.toISOString(), dur, overtime, ipEnd, bl.id);
+  db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = ?, is_overtime = ?, ip_address_end = ? WHERE id = ?').run(now.toISOString(), dur, overtime, clientIp.slice(0, 45), bl.id);
   db.prepare(`UPDATE attendance SET current_status = ?, break_start = NULL, break_type = NULL, break_limit = NULL,
               total_break_minutes = COALESCE(total_break_minutes,0) + ?, break_violations = COALESCE(break_violations,0) + ?
               WHERE staff_id = ? AND date = ?`)
