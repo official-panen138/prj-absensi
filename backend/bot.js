@@ -306,7 +306,7 @@ export async function notifyIpViolation(tenantId, staff, action, ip) {
   const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
   if (muted.includes('outside_ip_attempt')) return;
   const dept = staff.department ? ` · ${staff.department}` : '';
-  const actions = { clock_in: 'START (Clock In)', clock_out: 'END (Clock Out)', break_end: 'Back to Work' };
+  const actions = { clock_in: 'START (Clock In)', clock_out: 'END (Clock Out)', break_start: 'Mulai Break', break_end: 'Back to Work' };
   const actionLabel = actions[action] || action;
   await notifyMonitor(
     tenantId,

@@ -913,6 +913,11 @@ app.post('/api/bot/clock-out', tgAuth, (req, res) => {
 });
 
 app.post('/api/bot/break-start', tgAuth, async (req, res) => {
+  const clientIp = getClientIp(req);
+  if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'break_start', clientIp).catch(() => {});
+    return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk mulai break.`);
+  }
   const { type } = req.body || {};
   if (!['smoke', 'toilet', 'outside'].includes(type)) return fail(res, 400, 'Invalid break type');
   const today = todayPP();

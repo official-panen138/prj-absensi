@@ -171,13 +171,16 @@ export default function MiniApp() {
 
       {isWorking && (() => {
         const q = me?.break_quotas || {};
+        const ipBlocked = me?.ip_allowed === false;
         const mkBtn = (type, label) => {
           const quota = q[type];
           const exhausted = quota && quota.remaining <= 0;
+          const disabled = exhausted || ipBlocked;
           const suffix = quota ? ` · ${quota.used}m/${quota.limit}m` : '';
+          const badge = ipBlocked ? ' · Butuh IP Kantor' : exhausted ? ' · HABIS' : '';
           return (
-            <Btn color="amber" onClick={() => act('/break-start', { type })} disabled={exhausted}>
-              {label}{suffix}{exhausted ? ' · HABIS' : ''}
+            <Btn color="amber" onClick={() => act('/break-start', { type })} disabled={disabled}>
+              {label}{suffix}{badge}
             </Btn>
           );
         };
