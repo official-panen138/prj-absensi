@@ -153,7 +153,21 @@ export default function MiniApp() {
       {info && <div style={{padding:'10px 12px',background:'rgba(16,185,129,0.15)',color:'#34d399',borderRadius:10,fontSize:13,marginBottom:10}}>{info}</div>}
       {err && <div style={{padding:'10px 12px',background:'rgba(239,68,68,0.15)',color:'#f87171',borderRadius:10,fontSize:13,marginBottom:10}}>⚠ {err}</div>}
 
-      {notStarted && <Btn onClick={() => act('/clock-in')}>▶ START (Clock In)</Btn>}
+      {me && me.ip_allowed === false && (
+        <div style={{padding:'14px 14px',background:'rgba(239,68,68,0.15)',border:'1px solid rgba(239,68,68,0.4)',borderRadius:12,fontSize:13,marginBottom:14,lineHeight:1.5}}>
+          <div style={{fontWeight:700,color:'#fca5a5',marginBottom:4}}>📍 Anda di luar jaringan kantor</div>
+          <div style={{fontSize:12,color:'#fca5a5'}}>
+            Kembali ke kantor dan gunakan IP kantor untuk Clock-In atau Back to Work.
+          </div>
+          {me.client_ip && <div style={{fontSize:10,color:'#9ca3af',marginTop:6,fontFamily:'monospace'}}>IP saat ini: {me.client_ip}</div>}
+        </div>
+      )}
+
+      {notStarted && (
+        <Btn onClick={() => act('/clock-in')} disabled={me?.ip_allowed === false}>
+          ▶ START (Clock In){me?.ip_allowed === false ? ' · Butuh IP Kantor' : ''}
+        </Btn>
+      )}
 
       {isWorking && (() => {
         const q = me?.break_quotas || {};
@@ -208,10 +222,19 @@ export default function MiniApp() {
               {overtime && <div style={{marginTop:8,padding:'6px 10px',background:'rgba(239,68,68,0.15)',color:'#fca5a5',borderRadius:6,fontSize:11,textAlign:'center'}}>⚠ Anda melewati batas waktu break</div>}
             </div>
 
-            <div style={{padding:'12px',background:'rgba(251,191,36,0.1)',border:'1px solid rgba(251,191,36,0.3)',borderRadius:10,fontSize:12,color:'#fbbf24',marginBottom:14,textAlign:'center'}}>
-              ⏱ Break aktif. Klik tombol di bawah → kamera akan terbuka untuk scan QR di grup monitor.
-            </div>
-            <Btn color="emerald" onClick={scanQrAndEnd}>📷 Scan QR — Back to Work</Btn>
+            {me?.ip_allowed === false ? (
+              <div style={{padding:'12px',background:'rgba(239,68,68,0.1)',border:'1px solid rgba(239,68,68,0.3)',borderRadius:10,fontSize:12,color:'#fca5a5',marginBottom:14,textAlign:'center'}}>
+                ⚠ Back to Work tidak bisa dari luar kantor.<br />
+                Kembali ke jaringan kantor untuk scan QR.
+              </div>
+            ) : (
+              <div style={{padding:'12px',background:'rgba(251,191,36,0.1)',border:'1px solid rgba(251,191,36,0.3)',borderRadius:10,fontSize:12,color:'#fbbf24',marginBottom:14,textAlign:'center'}}>
+                ⏱ Break aktif. Klik tombol di bawah → kamera akan terbuka untuk scan QR di grup monitor.
+              </div>
+            )}
+            <Btn color="emerald" onClick={scanQrAndEnd} disabled={me?.ip_allowed === false}>
+              📷 Scan QR — Back to Work{me?.ip_allowed === false ? ' · Butuh IP Kantor' : ''}
+            </Btn>
           </>
         );
       })()}

@@ -849,19 +849,24 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
     };
   });
 
+  const clientIp = getClientIp(req);
+  const ipAllowed = isIpAllowed(req.staff.tenant_id, clientIp);
+
   res.json({
     success: true,
     staff: { id: req.staff.id, name: req.staff.name, department: req.staff.department, current_shift: req.staff.current_shift },
     attendance: att || null,
     schedule: sched || null,
     break_quotas: breakQuotas,
+    ip_allowed: ipAllowed,
+    client_ip: clientIp,
   });
 });
 
 app.post('/api/bot/clock-in', tgAuth, (req, res) => {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
-    return fail(res, 403, `IP Anda (${clientIp}) tidak dalam whitelist kantor. Clock-in hanya bisa dari jaringan kantor.`);
+    return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Clock-In.`);
   }
   const today = todayPP();
   const existing = db.prepare('SELECT id FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
@@ -953,7 +958,7 @@ app.post('/api/bot/break-request-qr', tgAuth, async (req, res) => {
 app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
-    return fail(res, 403, `IP Anda (${clientIp}) tidak dalam whitelist kantor. Back to Work hanya bisa dari jaringan kantor.`);
+    return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Back to Work.`);
   }
   const { break_id, qr_token } = req.body || {};
   if (!break_id || !qr_token) return fail(res, 400, 'break_id and qr_token required');
@@ -981,7 +986,7 @@ app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
 app.post('/api/bot/break-end', tgAuth, (req, res) => {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
-    return fail(res, 403, `IP Anda (${clientIp}) tidak dalam whitelist kantor. Back to Work hanya bisa dari jaringan kantor.`);
+    return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Back to Work.`);
   }
   const today = todayPP();
   const bl = db.prepare('SELECT * FROM break_log WHERE staff_id = ? AND end_time IS NULL ORDER BY id DESC LIMIT 1').get(req.staff.id);
