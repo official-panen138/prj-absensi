@@ -303,17 +303,20 @@ app.post('/api/schedule/generate', auth, (req, res) => {
   if (!ym) return fail(res, 400, 'month required');
   const tid = writeTenantId(req);
   if (!tid) return fail(res, 400, 'No tenant context');
+  const dept = req.body?.department ? String(req.body.department) : null;
   const [y, m] = ym.split('-').map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
-  const staff = db.prepare('SELECT id, current_shift FROM staff WHERE is_active = 1 AND tenant_id = ?').all(tid);
+  const staffQuery = 'SELECT id, current_shift FROM staff WHERE is_active = 1 AND tenant_id = ?' + (dept ? ' AND department = ?' : '');
+  const staff = dept ? db.prepare(staffQuery).all(tid, dept) : db.prepare(staffQuery).all(tid);
 
   db.prepare('INSERT OR IGNORE INTO schedules(tenant_id,month,status) VALUES(?,?,?)').run(tid, ym, 'draft');
   db.prepare('UPDATE schedules SET status = ? WHERE tenant_id = ? AND month = ?').run('draft', tid, ym);
 
-  const delSD = db.prepare('DELETE FROM schedule_daily WHERE tenant_id = ? AND date LIKE ? AND is_manual_override = 0');
+  const staffIds = staff.map((s) => s.id);
   const ins = db.prepare('INSERT OR IGNORE INTO schedule_daily(tenant_id,staff_id,date,status,shift) VALUES(?,?,?,?,?)');
+  const delOne = db.prepare('DELETE FROM schedule_daily WHERE tenant_id = ? AND staff_id = ? AND date LIKE ? AND is_manual_override = 0');
   const tx = db.transaction(() => {
-    delSD.run(tid, ym + '-%');
+    staffIds.forEach((sid) => delOne.run(tid, sid, ym + '-%'));
     staff.forEach((s) => {
       for (let d = 1; d <= daysInMonth; d++) {
         const date = `${ym}-${String(d).padStart(2, '0')}`;
@@ -324,7 +327,7 @@ app.post('/api/schedule/generate', auth, (req, res) => {
     });
   });
   tx();
-  ok(res, { month: ym });
+  ok(res, { month: ym, staff_affected: staff.length, department: dept });
 });
 
 app.put('/api/schedule/:ym/approve', auth, (req, res) => {
@@ -340,11 +343,16 @@ app.post('/api/schedule/:ym/copy-last-month', auth, (req, res) => {
   const ym = req.params.ym;
   const tid = writeTenantId(req);
   if (!tid) return fail(res, 400, 'No tenant context');
+  const dept = req.body?.department ? String(req.body.department) : null;
   const [y, m] = ym.split('-').map(Number);
   const prevDate = new Date(y, m - 2, 1);
   const prevYm = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
-  const prevDays = db.prepare('SELECT staff_id, strftime("%d", date) AS dd, status, shift FROM schedule_daily WHERE tenant_id = ? AND date LIKE ?').all(tid, prevYm + '-%');
-  if (!prevDays.length) return fail(res, 404, `No data for ${prevYm}`);
+  const prevDays = dept
+    ? db.prepare(`SELECT sd.staff_id, strftime("%d", sd.date) AS dd, sd.status, sd.shift
+                  FROM schedule_daily sd JOIN staff s ON s.id = sd.staff_id
+                  WHERE sd.tenant_id = ? AND sd.date LIKE ? AND s.department = ?`).all(tid, prevYm + '-%', dept)
+    : db.prepare('SELECT staff_id, strftime("%d", date) AS dd, status, shift FROM schedule_daily WHERE tenant_id = ? AND date LIKE ?').all(tid, prevYm + '-%');
+  if (!prevDays.length) return fail(res, 404, `No data for ${prevYm}${dept ? ` in ${dept}` : ''}`);
   const daysInMonth = new Date(y, m, 0).getDate();
   const ins = db.prepare('INSERT OR IGNORE INTO schedule_daily(tenant_id,staff_id,date,status,shift) VALUES(?,?,?,?,?)');
   const tx = db.transaction(() => {
@@ -356,7 +364,7 @@ app.post('/api/schedule/:ym/copy-last-month', auth, (req, res) => {
     });
   });
   tx();
-  res.json({ success: true, message: `Copied ${prevDays.length} entries from ${prevYm}` });
+  res.json({ success: true, message: `Copied ${prevDays.length} entries from ${prevYm}${dept ? ` (${dept})` : ''}` });
 });
 
 app.post('/api/schedule/:ym/import', auth, (req, res) => {
@@ -383,10 +391,15 @@ app.post('/api/schedule/:ym/import', auth, (req, res) => {
 
 app.get('/api/schedule/:ym/export', auth, async (req, res) => {
   const ym = req.params.ym;
+  const dept = req.query.department ? String(req.query.department) : null;
   const [y, m] = ym.split('-').map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
   const sc = scopeTenant(req);
-  const staff = db.prepare('SELECT id, name, department FROM staff WHERE is_active = 1' + sc.clause + ' ORDER BY department, name').all(...sc.params);
+  let staffQ = 'SELECT id, name, department FROM staff WHERE is_active = 1' + sc.clause;
+  const staffP = [...sc.params];
+  if (dept) { staffQ += ' AND department = ?'; staffP.push(dept); }
+  staffQ += ' ORDER BY department, name';
+  const staff = db.prepare(staffQ).all(...staffP);
   const days = db.prepare('SELECT staff_id, date, status, shift FROM schedule_daily WHERE date LIKE ?' + sc.clause).all(ym + '-%', ...sc.params);
   const key = (sid, d) => `${sid}_${d}`;
   const lookup = {};

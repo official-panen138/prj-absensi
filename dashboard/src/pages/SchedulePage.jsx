@@ -22,6 +22,7 @@ export default function SchedulePage({ token, user }) {
   const [importing, setImporting] = useState(false);
   const [copying, setCopying] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(true);
+  const [deptFilter, setDeptFilter] = useState('');
   const importRef = useRef(null);
 
   const fetchSchedule = useCallback(async () => {
@@ -44,9 +45,10 @@ export default function SchedulePage({ token, user }) {
   useEffect(() => { (async () => { try { const res = await apiFetch(token, '/settings'); const odr = res.data?.settings?.off_day_rules?.value; if (odr) setOffDayRules((prev) => ({ ...prev, ...odr })); } catch (e) {} })(); }, [token]);
 
   const generate = async () => {
-    if (!window.confirm('Generate schedule will overwrite existing draft. Continue?')) return;
+    const scope = deptFilter ? `department "${deptFilter}"` : 'ALL staff';
+    if (!window.confirm(`Generate schedule untuk ${scope} akan overwrite draft. Lanjut?`)) return;
     setGenerating(true);
-    try { await apiFetch(token, '/schedule/generate', { method: 'POST', body: { month } }); setToast({ type: 'ok', text: 'Schedule generated!' }); fetchSchedule(); } catch (e) { setToast({ type: 'error', text: e.message }); } finally { setGenerating(false); }
+    try { await apiFetch(token, '/schedule/generate', { method: 'POST', body: { month, department: deptFilter || undefined } }); setToast({ type: 'ok', text: `Generated for ${scope}!` }); fetchSchedule(); } catch (e) { setToast({ type: 'error', text: e.message }); } finally { setGenerating(false); }
   };
 
   const approve = async () => {
@@ -57,10 +59,11 @@ export default function SchedulePage({ token, user }) {
 
   // STEP 4: Copy from last month
   const copyLastMonth = async () => {
-    if (!window.confirm('Copy schedule from last month? This will overwrite current draft.')) return;
+    const scope = deptFilter ? `department "${deptFilter}"` : 'ALL staff';
+    if (!window.confirm(`Copy last month schedule untuk ${scope}? Overwrite current draft.`)) return;
     setCopying(true);
     try {
-      const res = await apiFetch(token, `/schedule/${month}/copy-last-month`, { method: 'POST' });
+      const res = await apiFetch(token, `/schedule/${month}/copy-last-month`, { method: 'POST', body: { department: deptFilter || undefined } });
       setToast({ type: 'ok', text: res.message });
       fetchSchedule();
     } catch (e) { setToast({ type: 'error', text: e.message }); } finally { setCopying(false); }
@@ -129,7 +132,15 @@ export default function SchedulePage({ token, user }) {
 
       if (entries.length === 0) throw new Error('No valid entries found in Excel file');
 
-      const res = await apiFetch(token, `/schedule/${month}/import`, { method: 'POST', body: { entries } });
+      // Filter by deptFilter if set
+      let finalEntries = entries;
+      if (deptFilter) {
+        const staffInDept = new Set((schedule?.staff_schedules || []).filter((s) => s.department === deptFilter).map((s) => s.name.toLowerCase()));
+        finalEntries = entries.filter((e) => staffInDept.has(e.staff_name.toLowerCase()));
+        if (finalEntries.length === 0) throw new Error(`No entries match department "${deptFilter}"`);
+      }
+
+      const res = await apiFetch(token, `/schedule/${month}/import`, { method: 'POST', body: { entries: finalEntries } });
       setToast({ type: 'ok', text: res.message });
       if (res.errors?.length) console.warn('Import warnings:', res.errors);
       fetchSchedule();
@@ -194,12 +205,14 @@ export default function SchedulePage({ token, user }) {
 
   const exportXlsx = async () => {
     try {
-      const r = await fetch(`${API_BASE}/schedule/${month}/export`, { headers: { Authorization: `Bearer ${token}` } });
+      const qs = deptFilter ? `?department=${encodeURIComponent(deptFilter)}` : '';
+      const r = await fetch(`${API_BASE}/schedule/${month}/export${qs}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!r.ok) throw new Error('Export failed');
       const b = await r.blob();
       const u = URL.createObjectURL(b);
       const a = document.createElement('a');
-      a.href = u; a.download = `schedule-${month}.xlsx`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u);
+      const suffix = deptFilter ? `-${deptFilter.replace(/\s+/g, '_')}` : '';
+      a.href = u; a.download = `schedule-${month}${suffix}.xlsx`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u);
     } catch (e) { setToast({ type: 'error', text: e.message }); }
   };
 
@@ -284,6 +297,17 @@ export default function SchedulePage({ token, user }) {
         <h1 className="text-xl lg:text-2xl font-extrabold">Schedule Calendar</h1>
         <div className="flex flex-wrap gap-2.5 items-center">
           <MonthPicker value={month} onChange={setMonth} />
+          <select
+            value={deptFilter}
+            onChange={(e) => setDeptFilter(e.target.value)}
+            className="bg-gray-800 border border-gray-700 text-gray-100 text-xs rounded-md px-2.5 py-1.5 focus:outline-none focus:border-emerald-500"
+            title="Filter aksi (Copy/Generate/Export/Import) per department"
+          >
+            <option value="">🌐 All Departments</option>
+            {[...new Set((schedule?.staff_schedules || []).map((s) => s.department).filter(Boolean))].sort().map((d) => (
+              <option key={d} value={d}>🏢 {d}</option>
+            ))}
+          </select>
           {schedStatus && <Badge color={schedStatus === 'approved' ? 'green' : schedStatus === 'draft' ? 'yellow' : 'gray'}>{schedStatus?.toUpperCase()}</Badge>}
           <Btn size="sm" variant="ghost" onClick={() => { setLoading(true); fetchSchedule(); }}>↻</Btn>
           <Btn size="sm" variant="warning" onClick={copyLastMonth} disabled={copying}>{copying ? <Spinner /> : '📋 Copy Last Month'}</Btn>
@@ -293,6 +317,12 @@ export default function SchedulePage({ token, user }) {
           <Btn size="sm" variant="ghost" onClick={() => importRef.current?.click()} disabled={importing}>{importing ? <Spinner /> : '📤 Import'}</Btn>
         </div>
       </div>
+
+      {deptFilter && (
+        <div className="mb-3 px-3 py-2 bg-emerald-500/10 border border-emerald-500/30 rounded-md text-[11px] text-emerald-400">
+          🏢 Aksi Copy/Generate/Export/Import akan berlaku hanya untuk department <strong>{deptFilter}</strong>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="flex flex-wrap gap-3 mb-3 text-[11px] text-gray-500">
