@@ -24,6 +24,7 @@ export default function SettingsPage({ token, user }) {
   const [pinForm, setPinForm] = useState('');
   const [showPin, setShowPin] = useState(false);
   const [botForm, setBotForm] = useState({ bot_token: '', monitor_group_chat_id: '', miniapp_url: '' });
+  const [motivForm, setMotivForm] = useState({ start: '', end: '' });
   const [botTokenMasked, setBotTokenMasked] = useState('');
   const [botStatus, setBotStatus] = useState(null);
   const [showBotToken, setShowBotToken] = useState(false);
@@ -52,6 +53,13 @@ export default function SettingsPage({ token, user }) {
       if (bc) {
         setBotForm({ bot_token: '', monitor_group_chat_id: bc.monitor_group_chat_id || '', miniapp_url: bc.miniapp_url || '' });
         setBotTokenMasked(bc.bot_token_masked || '');
+      }
+      const mq = s.motivation_quotes?.value;
+      if (mq) {
+        setMotivForm({
+          start: (mq.start || []).join('\n'),
+          end: (mq.end || []).join('\n'),
+        });
       }
       try { const bs = await apiFetch(token, '/bot/status'); setBotStatus(bs.data || null); } catch (e) {}
       try { const wsRes = await apiFetch(token, '/settings/workstations'); setWorkstations(wsRes.data || []); } catch (e) {}
@@ -247,6 +255,47 @@ export default function SettingsPage({ token, user }) {
               <div><div className="text-[13px] font-semibold">{n.label}</div><div className="text-[10px] text-gray-500">{n.desc}</div></div>
             </label>
           ))}
+        </div>
+      </Card>
+
+      {/* Motivational Quotes */}
+      <Card className="p-5 mb-4">
+        <SectionHeader title="💬 Motivational Quotes" actions={isAdmin && (
+          <Btn size="sm" onClick={() => {
+            const body = {
+              start: motivForm.start.split('\n').map((s) => s.trim()).filter(Boolean),
+              end: motivForm.end.split('\n').map((s) => s.trim()).filter(Boolean),
+            };
+            save('motiv', '/settings/motivation-quotes', body);
+          }} disabled={saving.motiv}>
+            {saving.motiv ? <Spinner /> : '💾 Save Quotes'}
+          </Btn>
+        )} />
+        <div className="text-xs text-gray-500 mb-3.5">
+          Popup yang muncul di Mini App saat staff klik START & END. Satu kutipan per baris — akan dipilih secara acak. Kosongkan untuk pakai default bawaan.
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <FormRow label="🚀 START QUOTES" note="muncul saat Clock-In">
+            <textarea
+              className={`${inputCls} min-h-[160px] leading-relaxed`}
+              value={motivForm.start}
+              disabled={!isAdmin}
+              onChange={(e) => setMotivForm((f) => ({ ...f, start: e.target.value }))}
+              placeholder={`Setiap panggilan adalah peluang baru. Let's close deals! 📞\nMarketing bukan cuma jual produk — kita bangun hubungan.\nKonsistensi mengalahkan intensitas. 📈`}
+            />
+          </FormRow>
+          <FormRow label="🙏 END QUOTES" note="muncul saat Clock-Out">
+            <textarea
+              className={`${inputCls} min-h-[160px] leading-relaxed`}
+              value={motivForm.end}
+              disabled={!isAdmin}
+              onChange={(e) => setMotivForm((f) => ({ ...f, end: e.target.value }))}
+              placeholder={`Terima kasih atas kerja keras hari ini! 🏆\nWell done! Rest well, tomorrow we conquer again. 💙\nKamu bagian penting dari tim ini — appreciated!`}
+            />
+          </FormRow>
+        </div>
+        <div className="mt-3 text-[11px] text-gray-500">
+          {motivForm.start.split('\n').filter((s) => s.trim()).length} start · {motivForm.end.split('\n').filter((s) => s.trim()).length} end quotes
         </div>
       </Card>
 

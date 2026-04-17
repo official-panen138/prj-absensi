@@ -99,9 +99,13 @@ export default function MiniApp() {
       const r = await api(path, token, { method: 'POST', body });
       setInfo('✓ OK');
       if (path === '/clock-in') {
-        setPopup({ kind: 'start', title: '🚀 Selamat Bekerja!', quote: pickRandom(START_QUOTES), color: '#34d399' });
+        const custom = me?.motivation_quotes?.start;
+        const pool = (custom && custom.length) ? custom : START_QUOTES;
+        setPopup({ kind: 'start', title: '🚀 Selamat Bekerja!', quote: pickRandom(pool), color: '#34d399' });
       } else if (path === '/clock-out') {
-        setPopup({ kind: 'end', title: '🙏 Terima Kasih!', quote: pickRandom(END_QUOTES), color: '#60a5fa' });
+        const custom = me?.motivation_quotes?.end;
+        const pool = (custom && custom.length) ? custom : END_QUOTES;
+        setPopup({ kind: 'end', title: '🙏 Terima Kasih!', quote: pickRandom(pool), color: '#60a5fa' });
       }
       await refresh();
       return r;

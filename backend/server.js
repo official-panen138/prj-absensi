@@ -730,6 +730,10 @@ const KV_ROUTES = {
   '/api/settings/qr-required': (body) => ['qr_required', !!body.enabled],
   '/api/settings/late-grace': (body) => ['late_grace_minutes', +body.minutes || 0],
   '/api/settings/registration-pin': (body) => ['registration_pin', String(body.pin || '')],
+  '/api/settings/motivation-quotes': (body) => ['motivation_quotes', {
+    start: Array.isArray(body.start) ? body.start.map((s) => String(s).trim()).filter(Boolean) : [],
+    end: Array.isArray(body.end) ? body.end.map((s) => String(s).trim()).filter(Boolean) : [],
+  }],
 };
 for (const [p, fn] of Object.entries(KV_ROUTES)) {
   app.put(p, auth, (req, res) => {
@@ -865,6 +869,12 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
   const clientIp = getClientIp(req);
   const ipAllowed = isIpAllowed(req.staff.tenant_id, clientIp);
 
+  const mq = getTenantSetting(req.staff.tenant_id, 'motivation_quotes', null) || {};
+  const motivationQuotes = {
+    start: (Array.isArray(mq.start) ? mq.start : []).map((s) => String(s).trim()).filter(Boolean),
+    end: (Array.isArray(mq.end) ? mq.end : []).map((s) => String(s).trim()).filter(Boolean),
+  };
+
   res.json({
     success: true,
     staff: { id: req.staff.id, name: req.staff.name, department: req.staff.department, current_shift: req.staff.current_shift },
@@ -873,6 +883,7 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
     break_quotas: breakQuotas,
     ip_allowed: ipAllowed,
     client_ip: clientIp,
+    motivation_quotes: motivationQuotes,
   });
 });
 
