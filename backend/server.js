@@ -632,7 +632,7 @@ app.post('/api/bot/break-request-qr', tgAuth, async (req, res) => {
   if (!bl) return fail(res, 400, 'Tidak ada break aktif.');
   // Generate QR token baru (regenerate setiap request supaya QR lama invalid)
   const qrToken = crypto.randomBytes(8).toString('hex');
-  const qrExp = new Date(Date.now() + 10 * 60000).toISOString(); // valid 10 menit
+  const qrExp = new Date(Date.now() + 5 * 60000).toISOString(); // valid 5 menit
   db.prepare('UPDATE break_log SET qr_token = ?, qr_expires_at = ? WHERE id = ?').run(qrToken, qrExp, bl.id);
   const updatedBl = { id: bl.id, type: bl.type, qr_token: qrToken };
   pushBreakQRToMonitor(updatedBl, req.staff).catch((e) => console.warn('[bot] push QR failed:', e.message));
