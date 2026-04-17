@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import ExcelJS from 'exceljs';
-import { db, getSetting, setSetting } from './db.js';
+import { db, getSetting, setSetting, getDefaultTenantId, getTenantSetting, setTenantSetting } from './db.js';
 import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, pushBreakQRToMonitor } from './bot.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,11 +30,40 @@ function auth(req, res, next) {
   const tok = h.startsWith('Bearer ') ? h.slice(7) : null;
   if (!tok) return fail(res, 401, 'Missing token');
   try {
-    req.user = jwt.verify(tok, JWT_SECRET);
+    const payload = jwt.verify(tok, JWT_SECRET);
+    req.user = payload;
+    req.is_super_admin = payload.role === 'super_admin';
+    // Super admin can override tenant context via X-Tenant-Id header
+    if (req.is_super_admin) {
+      const override = req.headers['x-tenant-id'];
+      req.tenant_id = override ? parseInt(override) || null : null; // null = all tenants
+    } else {
+      req.tenant_id = payload.tenant_id || null;
+    }
     next();
   } catch {
     return fail(res, 401, 'Invalid token');
   }
+}
+
+function requireSuperAdmin(req, res, next) {
+  if (!req.is_super_admin) return fail(res, 403, 'Super admin only');
+  next();
+}
+
+// Returns WHERE clause fragment (" AND <col> = ?") + param list for tenant scoping.
+// If super_admin without tenant override → no filter.
+// If tenant_id set → filter to that tenant.
+function scopeTenant(req, col = 'tenant_id') {
+  if (req.is_super_admin && !req.tenant_id) return { clause: '', params: [] };
+  return { clause: ` AND ${col} = ?`, params: [req.tenant_id] };
+}
+
+// tenant_id to use for INSERTs (super_admin creating data in a specific tenant via header)
+function writeTenantId(req) {
+  if (req.tenant_id) return req.tenant_id;
+  if (req.is_super_admin) return getDefaultTenantId(); // super_admin without header → default
+  return req.user?.tenant_id || getDefaultTenantId();
 }
 
 // ============ AUTH ============
@@ -43,15 +72,68 @@ app.post('/api/auth/login', (req, res) => {
   if (!username || !password) return fail(res, 400, 'Username and password required');
   const u = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
   if (!u || !bcrypt.compareSync(password, u.password_hash)) return fail(res, 401, 'Invalid credentials');
-  const token = jwt.sign({ id: u.id, username: u.username, role: u.role, name: u.name }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, user: { id: u.id, username: u.username, role: u.role, name: u.name } });
+  const token = jwt.sign({
+    id: u.id, username: u.username, role: u.role, name: u.name, tenant_id: u.tenant_id || null,
+  }, JWT_SECRET, { expiresIn: '7d' });
+  let tenant = null;
+  if (u.tenant_id) tenant = db.prepare('SELECT id, slug, name FROM tenants WHERE id = ?').get(u.tenant_id) || null;
+  res.json({ token, user: { id: u.id, username: u.username, role: u.role, name: u.name, tenant_id: u.tenant_id || null, tenant } });
+});
+
+app.get('/api/auth/me', auth, (req, res) => {
+  const u = db.prepare('SELECT id, username, role, name, tenant_id FROM users WHERE id = ?').get(req.user.id);
+  if (!u) return fail(res, 404, 'User not found');
+  let tenant = null;
+  if (u.tenant_id) tenant = db.prepare('SELECT id, slug, name FROM tenants WHERE id = ?').get(u.tenant_id) || null;
+  res.json({ user: u, tenant, is_super_admin: u.role === 'super_admin' });
+});
+
+// ============ TENANTS (super_admin) ============
+app.get('/api/tenants', auth, (req, res) => {
+  if (req.is_super_admin) {
+    const rows = db.prepare('SELECT id, slug, name, created_at FROM tenants ORDER BY name').all();
+    return ok(res, rows);
+  }
+  // Non-super-admin only sees their own tenant
+  const t = req.user.tenant_id ? db.prepare('SELECT id, slug, name, created_at FROM tenants WHERE id = ?').get(req.user.tenant_id) : null;
+  ok(res, t ? [t] : []);
+});
+
+app.post('/api/tenants', auth, requireSuperAdmin, (req, res) => {
+  const { slug, name } = req.body || {};
+  if (!slug || !name) return fail(res, 400, 'slug and name required');
+  const s = String(slug).trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  if (!s) return fail(res, 400, 'Invalid slug');
+  try {
+    const r = db.prepare('INSERT INTO tenants(slug,name) VALUES(?,?)').run(s, name);
+    ok(res, { id: r.lastInsertRowid, slug: s, name });
+  } catch (e) {
+    fail(res, 400, e.message);
+  }
+});
+
+app.put('/api/tenants/:id', auth, requireSuperAdmin, (req, res) => {
+  const id = +req.params.id;
+  const { name } = req.body || {};
+  if (!name) return fail(res, 400, 'name required');
+  db.prepare('UPDATE tenants SET name = ? WHERE id = ?').run(name, id);
+  ok(res, { id });
+});
+
+app.delete('/api/tenants/:id', auth, requireSuperAdmin, (req, res) => {
+  const id = +req.params.id;
+  const cnt = db.prepare('SELECT COUNT(*) AS c FROM staff WHERE tenant_id = ?').get(id).c;
+  if (cnt > 0) return fail(res, 400, `Cannot delete tenant with ${cnt} staff. Move/delete staff first.`);
+  db.prepare('DELETE FROM tenants WHERE id = ?').run(id);
+  ok(res, { id });
 });
 
 // ============ STAFF ============
 app.get('/api/staff', auth, (req, res) => {
   const { shift, category, department } = req.query;
-  let q = 'SELECT * FROM staff WHERE 1=1';
-  const params = [];
+  const sc = scopeTenant(req);
+  let q = 'SELECT * FROM staff WHERE 1=1' + sc.clause;
+  const params = [...sc.params];
   if (shift) { q += ' AND current_shift = ?'; params.push(shift); }
   if (category) { q += ' AND category = ?'; params.push(category); }
   if (department) { q += ' AND department LIKE ?'; params.push('%' + department + '%'); }
@@ -63,14 +145,21 @@ app.get('/api/staff', auth, (req, res) => {
 app.post('/api/staff', auth, (req, res) => {
   const b = req.body || {};
   if (!b.name) return fail(res, 400, 'Name required');
-  const r = db.prepare(`INSERT INTO staff(name,category,current_shift,department,phone,telegram_id,telegram_username,join_date,is_active,is_approved)
-                        VALUES(?,?,?,?,?,?,?,?,1,1)`).run(b.name, b.category || 'indonesian', b.current_shift || 'morning', b.department || null, b.phone || null, b.telegram_id || null, b.telegram_username || null, b.join_date || null);
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
+  const r = db.prepare(`INSERT INTO staff(tenant_id,name,category,current_shift,department,phone,telegram_id,telegram_username,join_date,is_active,is_approved)
+                        VALUES(?,?,?,?,?,?,?,?,?,1,1)`).run(tid, b.name, b.category || 'indonesian', b.current_shift || 'morning', b.department || null, b.phone || null, b.telegram_id || null, b.telegram_username || null, b.join_date || null);
   ok(res, { id: r.lastInsertRowid });
 });
 
+function findStaffScoped(req, id) {
+  const sc = scopeTenant(req);
+  return db.prepare('SELECT * FROM staff WHERE id = ?' + sc.clause).get(id, ...sc.params);
+}
+
 app.put('/api/staff/:id', auth, (req, res) => {
   const id = +req.params.id;
-  const s = db.prepare('SELECT * FROM staff WHERE id = ?').get(id);
+  const s = findStaffScoped(req, id);
   if (!s) return fail(res, 404, 'Staff not found');
   const allowed = ['name', 'category', 'current_shift', 'department', 'phone', 'telegram_id', 'telegram_username', 'join_date'];
   const fields = [], values = [];
@@ -83,15 +172,16 @@ app.put('/api/staff/:id', auth, (req, res) => {
 
 app.put('/api/staff/:id/approve', auth, (req, res) => {
   const id = +req.params.id;
+  const s = findStaffScoped(req, id);
+  if (!s) return fail(res, 404, 'Staff not found');
   db.prepare('UPDATE staff SET is_approved = 1 WHERE id = ?').run(id);
-  const s = db.prepare('SELECT name, telegram_id FROM staff WHERE id = ?').get(id);
-  if (s?.telegram_id) notifyApproved(s.telegram_id, s.name);
+  if (s.telegram_id) notifyApproved(s.telegram_id, s.name);
   ok(res, { id });
 });
 
 app.delete('/api/staff/:id', auth, (req, res) => {
   const id = +req.params.id;
-  const s = db.prepare('SELECT * FROM staff WHERE id = ?').get(id);
+  const s = findStaffScoped(req, id);
   if (!s) return fail(res, 404, 'Not found');
   const newVal = s.is_active ? 0 : 1;
   db.prepare('UPDATE staff SET is_active = ? WHERE id = ?').run(newVal, id);
@@ -100,6 +190,8 @@ app.delete('/api/staff/:id', auth, (req, res) => {
 
 app.delete('/api/staff/:id/permanent', auth, (req, res) => {
   const id = +req.params.id;
+  const s = findStaffScoped(req, id);
+  if (!s) return fail(res, 404, 'Not found');
   db.prepare('DELETE FROM staff WHERE id = ?').run(id);
   ok(res, { id });
 });
@@ -111,6 +203,7 @@ function todayPP() {
 
 app.get('/api/activity/live', auth, (req, res) => {
   const today = todayPP();
+  const sc = scopeTenant(req, 's.tenant_id');
   const staff = db.prepare(`
     SELECT s.id, s.name, s.department, s.category, s.current_shift,
            a.clock_in, a.clock_out, a.late_minutes, a.current_status,
@@ -119,16 +212,16 @@ app.get('/api/activity/live', auth, (req, res) => {
     FROM staff s
     LEFT JOIN attendance a ON a.staff_id = s.id AND a.date = ?
     LEFT JOIN schedule_daily sd ON sd.staff_id = s.id AND sd.date = ?
-    WHERE s.is_active = 1
+    WHERE s.is_active = 1${sc.clause}
     ORDER BY s.name
-  `).all(today, today);
+  `).all(today, today, ...sc.params);
 
   const breaks = db.prepare(`
     SELECT bl.id, s.name, bl.type, bl.start_time, bl.limit_minutes
     FROM break_log bl
     JOIN staff s ON s.id = bl.staff_id
-    WHERE bl.end_time IS NULL AND DATE(bl.start_time) = ?
-  `).all(today).map((b) => ({
+    WHERE bl.end_time IS NULL AND DATE(bl.start_time) = ?${sc.clause}
+  `).all(today, ...sc.params).map((b) => ({
     ...b,
     elapsed_minutes: Math.max(0, (Date.now() - new Date(b.start_time).getTime()) / 60000),
   }));
@@ -141,18 +234,21 @@ app.get('/api/activity/live', auth, (req, res) => {
 
 app.get('/api/activity/active-breaks-qr', auth, (req, res) => {
   const today = todayPP();
+  const sc = scopeTenant(req, 's.tenant_id');
   const rows = db.prepare(`
     SELECT bl.id, s.name AS staff_name, s.department, bl.type, bl.start_time, bl.qr_token, bl.qr_expires_at
     FROM break_log bl
     JOIN staff s ON s.id = bl.staff_id
-    WHERE bl.end_time IS NULL AND bl.qr_token IS NOT NULL AND DATE(bl.start_time) = ?
-  `).all(today);
+    WHERE bl.end_time IS NULL AND bl.qr_token IS NOT NULL AND DATE(bl.start_time) = ?${sc.clause}
+  `).all(today, ...sc.params);
   ok(res, rows);
 });
 
 app.post('/api/activity/force-clockout', auth, (req, res) => {
   const { staff_id } = req.body || {};
   if (!staff_id) return fail(res, 400, 'staff_id required');
+  const s = findStaffScoped(req, staff_id);
+  if (!s) return fail(res, 404, 'Staff not in your tenant');
   const today = todayPP();
   const att = db.prepare('SELECT id FROM attendance WHERE staff_id = ? AND date = ?').get(staff_id, today);
   if (!att) return fail(res, 404, 'Attendance not found for today');
@@ -163,15 +259,21 @@ app.post('/api/activity/force-clockout', auth, (req, res) => {
 
 app.get('/api/activity/log/:date', auth, (req, res) => {
   const { date } = req.params;
+  const sc = scopeTenant(req, 's.tenant_id');
   const rows = db.prepare(`
     SELECT a.id, s.name, s.department, a.shift, a.clock_in, a.clock_out, a.late_minutes, a.ip_address, a.productive_ratio
     FROM attendance a
     JOIN staff s ON s.id = a.staff_id
-    WHERE a.date = ?
+    WHERE a.date = ?${sc.clause}
     ORDER BY a.clock_in
-  `).all(date);
+  `).all(date, ...sc.params);
 
-  const breaks = db.prepare(`SELECT attendance_id, type, start_time, end_time, duration_minutes, is_overtime FROM break_log WHERE DATE(start_time) = ?`).all(date);
+  const sc2 = scopeTenant(req, 's2.tenant_id');
+  const breaks = db.prepare(`
+    SELECT bl.attendance_id, bl.type, bl.start_time, bl.end_time, bl.duration_minutes, bl.is_overtime
+    FROM break_log bl JOIN staff s2 ON s2.id = bl.staff_id
+    WHERE DATE(bl.start_time) = ?${sc2.clause}
+  `).all(date, ...sc2.params);
   const byAtt = {};
   breaks.forEach((b) => { (byAtt[b.attendance_id] = byAtt[b.attendance_id] || []).push(b); });
   rows.forEach((r) => { r.breaks = byAtt[r.id] || []; });
@@ -181,9 +283,11 @@ app.get('/api/activity/log/:date', auth, (req, res) => {
 // ============ SCHEDULE ============
 app.get('/api/schedule/:ym', auth, (req, res) => {
   const ym = req.params.ym;
-  const sched = db.prepare('SELECT * FROM schedules WHERE month = ?').get(ym) || { status: null };
-  const staff = db.prepare('SELECT id, name, category, department FROM staff WHERE is_active = 1 ORDER BY name').all();
-  const days = db.prepare('SELECT * FROM schedule_daily WHERE date LIKE ? ORDER BY date').all(ym + '-%');
+  const sc = scopeTenant(req);
+  const sched = db.prepare('SELECT * FROM schedules WHERE month = ?' + sc.clause).get(ym, ...sc.params) || { status: null };
+  const staff = db.prepare('SELECT id, name, category, department FROM staff WHERE is_active = 1' + sc.clause + ' ORDER BY name').all(...sc.params);
+  const scsd = scopeTenant(req, 'sd.tenant_id');
+  const days = db.prepare(`SELECT sd.* FROM schedule_daily sd WHERE sd.date LIKE ?${scsd.clause} ORDER BY sd.date`).all(ym + '-%', ...scsd.params);
   const byStaff = {};
   staff.forEach((s) => { byStaff[s.id] = { staff_id: s.id, name: s.name, category: s.category, department: s.department, days: [] }; });
   days.forEach((d) => { if (byStaff[d.staff_id]) byStaff[d.staff_id].days.push(d); });
@@ -197,23 +301,25 @@ app.get('/api/schedule/rotation/:ym', auth, (req, res) => {
 app.post('/api/schedule/generate', auth, (req, res) => {
   const ym = req.body?.month;
   if (!ym) return fail(res, 400, 'month required');
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
   const [y, m] = ym.split('-').map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
-  const staff = db.prepare('SELECT id, current_shift FROM staff WHERE is_active = 1').all();
+  const staff = db.prepare('SELECT id, current_shift FROM staff WHERE is_active = 1 AND tenant_id = ?').all(tid);
 
-  db.prepare('INSERT OR IGNORE INTO schedules(month,status) VALUES(?,?)').run(ym, 'draft');
-  db.prepare('UPDATE schedules SET status = ? WHERE month = ?').run('draft', ym);
+  db.prepare('INSERT OR IGNORE INTO schedules(tenant_id,month,status) VALUES(?,?,?)').run(tid, ym, 'draft');
+  db.prepare('UPDATE schedules SET status = ? WHERE tenant_id = ? AND month = ?').run('draft', tid, ym);
 
-  const delSD = db.prepare('DELETE FROM schedule_daily WHERE date LIKE ? AND is_manual_override = 0');
-  const ins = db.prepare('INSERT OR IGNORE INTO schedule_daily(staff_id,date,status,shift) VALUES(?,?,?,?)');
+  const delSD = db.prepare('DELETE FROM schedule_daily WHERE tenant_id = ? AND date LIKE ? AND is_manual_override = 0');
+  const ins = db.prepare('INSERT OR IGNORE INTO schedule_daily(tenant_id,staff_id,date,status,shift) VALUES(?,?,?,?,?)');
   const tx = db.transaction(() => {
-    delSD.run(ym + '-%');
+    delSD.run(tid, ym + '-%');
     staff.forEach((s) => {
       for (let d = 1; d <= daysInMonth; d++) {
         const date = `${ym}-${String(d).padStart(2, '0')}`;
         const dow = new Date(y, m - 1, d).getDay();
         const off = dow === 0 && (s.id + d) % 4 === 0;
-        ins.run(s.id, date, off ? 'off' : 'work', s.current_shift);
+        ins.run(tid, s.id, date, off ? 'off' : 'work', s.current_shift);
       }
     });
   });
@@ -223,26 +329,30 @@ app.post('/api/schedule/generate', auth, (req, res) => {
 
 app.put('/api/schedule/:ym/approve', auth, (req, res) => {
   const ym = req.params.ym;
-  db.prepare('INSERT OR IGNORE INTO schedules(month,status) VALUES(?,?)').run(ym, 'draft');
-  db.prepare('UPDATE schedules SET status = ? WHERE month = ?').run('approved', ym);
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
+  db.prepare('INSERT OR IGNORE INTO schedules(tenant_id,month,status) VALUES(?,?,?)').run(tid, ym, 'draft');
+  db.prepare('UPDATE schedules SET status = ? WHERE tenant_id = ? AND month = ?').run('approved', tid, ym);
   ok(res, { month: ym });
 });
 
 app.post('/api/schedule/:ym/copy-last-month', auth, (req, res) => {
   const ym = req.params.ym;
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
   const [y, m] = ym.split('-').map(Number);
   const prevDate = new Date(y, m - 2, 1);
   const prevYm = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
-  const prevDays = db.prepare('SELECT staff_id, strftime("%d", date) AS dd, status, shift FROM schedule_daily WHERE date LIKE ?').all(prevYm + '-%');
+  const prevDays = db.prepare('SELECT staff_id, strftime("%d", date) AS dd, status, shift FROM schedule_daily WHERE tenant_id = ? AND date LIKE ?').all(tid, prevYm + '-%');
   if (!prevDays.length) return fail(res, 404, `No data for ${prevYm}`);
   const daysInMonth = new Date(y, m, 0).getDate();
-  const ins = db.prepare('INSERT OR IGNORE INTO schedule_daily(staff_id,date,status,shift) VALUES(?,?,?,?)');
+  const ins = db.prepare('INSERT OR IGNORE INTO schedule_daily(tenant_id,staff_id,date,status,shift) VALUES(?,?,?,?,?)');
   const tx = db.transaction(() => {
-    db.prepare('INSERT OR IGNORE INTO schedules(month,status) VALUES(?,?)').run(ym, 'draft');
+    db.prepare('INSERT OR IGNORE INTO schedules(tenant_id,month,status) VALUES(?,?,?)').run(tid, ym, 'draft');
     prevDays.forEach((p) => {
       const day = parseInt(p.dd);
       if (day > daysInMonth) return;
-      ins.run(p.staff_id, `${ym}-${String(day).padStart(2, '0')}`, p.status, p.shift);
+      ins.run(tid, p.staff_id, `${ym}-${String(day).padStart(2, '0')}`, p.status, p.shift);
     });
   });
   tx();
@@ -254,14 +364,16 @@ app.post('/api/schedule/:ym/import', auth, (req, res) => {
   const entries = req.body?.entries || [];
   const errors = [];
   let imported = 0;
-  const findStaff = db.prepare('SELECT id FROM staff WHERE LOWER(name) = LOWER(?)');
-  const ins = db.prepare('INSERT INTO schedule_daily(staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,?,1) ON CONFLICT(staff_id,date) DO UPDATE SET status=excluded.status, shift=excluded.shift, is_manual_override=1');
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
+  const findStaff = db.prepare('SELECT id FROM staff WHERE LOWER(name) = LOWER(?) AND tenant_id = ?');
+  const ins = db.prepare('INSERT INTO schedule_daily(tenant_id,staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,?,?,1) ON CONFLICT(staff_id,date) DO UPDATE SET status=excluded.status, shift=excluded.shift, is_manual_override=1');
   const tx = db.transaction(() => {
-    db.prepare('INSERT OR IGNORE INTO schedules(month,status) VALUES(?,?)').run(ym, 'draft');
+    db.prepare('INSERT OR IGNORE INTO schedules(tenant_id,month,status) VALUES(?,?,?)').run(tid, ym, 'draft');
     for (const e of entries) {
-      const s = findStaff.get(e.staff_name);
+      const s = findStaff.get(e.staff_name, tid);
       if (!s) { errors.push(`Staff not found: ${e.staff_name}`); continue; }
-      try { ins.run(s.id, e.date, e.status, e.shift); imported++; }
+      try { ins.run(tid, s.id, e.date, e.status, e.shift); imported++; }
       catch (err) { errors.push(`${e.staff_name} ${e.date}: ${err.message}`); }
     }
   });
@@ -273,8 +385,9 @@ app.get('/api/schedule/:ym/export', auth, async (req, res) => {
   const ym = req.params.ym;
   const [y, m] = ym.split('-').map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
-  const staff = db.prepare('SELECT id, name, department FROM staff WHERE is_active = 1 ORDER BY name').all();
-  const days = db.prepare('SELECT staff_id, date, status, shift FROM schedule_daily WHERE date LIKE ?').all(ym + '-%');
+  const sc = scopeTenant(req);
+  const staff = db.prepare('SELECT id, name, department FROM staff WHERE is_active = 1' + sc.clause + ' ORDER BY name').all(...sc.params);
+  const days = db.prepare('SELECT staff_id, date, status, shift FROM schedule_daily WHERE date LIKE ?' + sc.clause).all(ym + '-%', ...sc.params);
   const key = (sid, d) => `${sid}_${d}`;
   const lookup = {};
   days.forEach((x) => { lookup[key(x.staff_id, x.date)] = x; });
@@ -304,14 +417,19 @@ app.get('/api/schedule/:ym/export', auth, async (req, res) => {
 app.post('/api/schedule/daily', auth, (req, res) => {
   const { staff_id, date, status, shift, is_manual_override } = req.body || {};
   if (!staff_id || !date) return fail(res, 400, 'staff_id and date required');
-  const r = db.prepare(`INSERT INTO schedule_daily(staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,?,?)
+  const s = findStaffScoped(req, staff_id);
+  if (!s) return fail(res, 404, 'Staff not in your tenant');
+  const r = db.prepare(`INSERT INTO schedule_daily(tenant_id,staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,?,?,?)
                         ON CONFLICT(staff_id,date) DO UPDATE SET status=excluded.status, shift=excluded.shift, is_manual_override=excluded.is_manual_override`)
-                .run(staff_id, date, status || 'work', shift || 'morning', is_manual_override ? 1 : 0);
+                .run(s.tenant_id, staff_id, date, status || 'work', shift || 'morning', is_manual_override ? 1 : 0);
   ok(res, { id: r.lastInsertRowid || null });
 });
 
 app.put('/api/schedule/daily/:id', auth, (req, res) => {
   const id = +req.params.id;
+  const sc = scopeTenant(req);
+  const existing = db.prepare('SELECT id FROM schedule_daily WHERE id = ?' + sc.clause).get(id, ...sc.params);
+  if (!existing) return fail(res, 404, 'Not found or not in your tenant');
   const { status, shift, is_manual_override } = req.body || {};
   const fields = [], values = [];
   if (status !== undefined) { fields.push('status = ?'); values.push(status); }
@@ -324,25 +442,35 @@ app.put('/api/schedule/daily/:id', auth, (req, res) => {
 });
 
 // ============ SWAP ============
-const swapJoin = `SELECT sw.id, sw.target_date, sw.current_shift, sw.reason, sw.status, sw.reject_reason, sw.created_at,
-                         s.name AS requester_name, s.department AS requester_dept
-                  FROM swap_requests sw
-                  JOIN staff s ON s.id = sw.requester_id`;
+const swapJoinBase = `SELECT sw.id, sw.target_date, sw.current_shift, sw.reason, sw.status, sw.reject_reason, sw.created_at,
+                             s.name AS requester_name, s.department AS requester_dept
+                      FROM swap_requests sw
+                      JOIN staff s ON s.id = sw.requester_id`;
 
 app.get('/api/swap/pending', auth, (req, res) => {
-  ok(res, db.prepare(swapJoin + ' WHERE sw.status = ? ORDER BY sw.created_at DESC').all('pending'));
+  const sc = scopeTenant(req, 'sw.tenant_id');
+  ok(res, db.prepare(swapJoinBase + ' WHERE sw.status = ?' + sc.clause + ' ORDER BY sw.created_at DESC').all('pending', ...sc.params));
 });
 app.get('/api/swap/history', auth, (req, res) => {
-  ok(res, db.prepare(swapJoin + ' ORDER BY sw.created_at DESC').all());
+  const sc = scopeTenant(req, 'sw.tenant_id');
+  ok(res, db.prepare(swapJoinBase + ' WHERE 1=1' + sc.clause + ' ORDER BY sw.created_at DESC').all(...sc.params));
 });
 app.put('/api/swap/:id/approve', auth, (req, res) => {
-  db.prepare('UPDATE swap_requests SET status = ? WHERE id = ?').run('approved', +req.params.id);
-  ok(res, { id: +req.params.id });
+  const id = +req.params.id;
+  const sc = scopeTenant(req);
+  const r = db.prepare('SELECT id FROM swap_requests WHERE id = ?' + sc.clause).get(id, ...sc.params);
+  if (!r) return fail(res, 404, 'Not found or not in your tenant');
+  db.prepare('UPDATE swap_requests SET status = ? WHERE id = ?').run('approved', id);
+  ok(res, { id });
 });
 app.put('/api/swap/:id/reject', auth, (req, res) => {
+  const id = +req.params.id;
+  const sc = scopeTenant(req);
+  const r = db.prepare('SELECT id FROM swap_requests WHERE id = ?' + sc.clause).get(id, ...sc.params);
+  if (!r) return fail(res, 404, 'Not found or not in your tenant');
   const { reject_reason } = req.body || {};
-  db.prepare('UPDATE swap_requests SET status = ?, reject_reason = ? WHERE id = ?').run('rejected', reject_reason || '', +req.params.id);
-  ok(res, { id: +req.params.id });
+  db.prepare('UPDATE swap_requests SET status = ?, reject_reason = ? WHERE id = ?').run('rejected', reject_reason || '', id);
+  ok(res, { id });
 });
 
 // ============ REPORTS ============
@@ -356,6 +484,7 @@ function dateRange(ym, from, to) {
 
 app.get('/api/reports/monthly/:ym', auth, (req, res) => {
   const { start, end } = dateRange(req.params.ym, req.query.from, req.query.to);
+  const sc = scopeTenant(req);
   const row = db.prepare(`
     SELECT COUNT(DISTINCT staff_id) AS unique_staff,
            COUNT(*) AS total_records,
@@ -364,13 +493,14 @@ app.get('/api/reports/monthly/:ym', auth, (req, res) => {
            COALESCE(SUM(late_minutes),0) AS total_late_minutes,
            COALESCE(SUM(break_violations),0) AS total_break_violations,
            COALESCE(AVG(productive_ratio),0) AS avg_productive_ratio
-    FROM attendance WHERE date BETWEEN ? AND ?
-  `).get(start, end);
+    FROM attendance WHERE date BETWEEN ? AND ?${sc.clause}
+  `).get(start, end, ...sc.params);
   ok(res, row);
 });
 
 app.get('/api/reports/attendance/:ym', auth, (req, res) => {
   const { start, end } = dateRange(req.params.ym, req.query.from, req.query.to);
+  const sc = scopeTenant(req, 's.tenant_id');
   const rows = db.prepare(`
     SELECT s.id AS staff_id, s.name, s.department, s.current_shift,
            COUNT(DISTINCT CASE WHEN a.clock_in IS NOT NULL THEN a.date END) AS days_present,
@@ -382,27 +512,29 @@ app.get('/api/reports/attendance/:ym', auth, (req, res) => {
     FROM staff s
     LEFT JOIN attendance a ON a.staff_id = s.id AND a.date BETWEEN ? AND ?
     LEFT JOIN schedule_daily sd ON sd.staff_id = s.id AND sd.date BETWEEN ? AND ?
-    WHERE s.is_active = 1
+    WHERE s.is_active = 1${sc.clause}
     GROUP BY s.id
     ORDER BY s.name
-  `).all(start, end, start, end);
+  `).all(start, end, start, end, ...sc.params);
   ok(res, rows);
 });
 
 app.get('/api/reports/violations/:ym', auth, (req, res) => {
   const { start, end } = dateRange(req.params.ym, req.query.from, req.query.to);
+  const sc = scopeTenant(req, 's.tenant_id');
   const rows = db.prepare(`
     SELECT s.name, s.department, bl.type, bl.duration_minutes, bl.limit_minutes, DATE(bl.start_time) AS date
     FROM break_log bl
     JOIN staff s ON s.id = bl.staff_id
-    WHERE bl.is_overtime = 1 AND DATE(bl.start_time) BETWEEN ? AND ?
+    WHERE bl.is_overtime = 1 AND DATE(bl.start_time) BETWEEN ? AND ?${sc.clause}
     ORDER BY bl.start_time DESC
-  `).all(start, end);
+  `).all(start, end, ...sc.params);
   ok(res, rows);
 });
 
 app.get('/api/reports/productivity/:ym', auth, (req, res) => {
   const { start, end } = dateRange(req.params.ym, req.query.from, req.query.to);
+  const sc = scopeTenant(req, 's.tenant_id');
   const rows = db.prepare(`
     SELECT s.id AS staff_id, s.name, s.department, s.current_shift,
            COUNT(DISTINCT a.date) AS days_worked,
@@ -412,15 +544,16 @@ app.get('/api/reports/productivity/:ym', auth, (req, res) => {
            COALESCE(SUM(a.break_violations),0) AS overtime_breaks
     FROM staff s
     LEFT JOIN attendance a ON a.staff_id = s.id AND a.date BETWEEN ? AND ?
-    WHERE s.is_active = 1
+    WHERE s.is_active = 1${sc.clause}
     GROUP BY s.id
     ORDER BY avg_productive_ratio DESC
-  `).all(start, end);
+  `).all(start, end, ...sc.params);
   ok(res, rows);
 });
 
 app.get('/api/reports/export/:ym', auth, async (req, res) => {
   const { start, end } = dateRange(req.params.ym, req.query.from, req.query.to);
+  const sc = scopeTenant(req, 's.tenant_id');
   const rows = db.prepare(`
     SELECT s.name, s.department, s.current_shift,
            COUNT(DISTINCT CASE WHEN a.clock_in IS NOT NULL THEN a.date END) AS days_present,
@@ -429,9 +562,9 @@ app.get('/api/reports/export/:ym', auth, async (req, res) => {
            COALESCE(AVG(a.productive_ratio),0) AS avg_productive_ratio
     FROM staff s
     LEFT JOIN attendance a ON a.staff_id = s.id AND a.date BETWEEN ? AND ?
-    WHERE s.is_active = 1
+    WHERE s.is_active = 1${sc.clause}
     GROUP BY s.id
-  `).all(start, end);
+  `).all(start, end, ...sc.params);
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Report');
   ws.addRow(['Name', 'Dept', 'Shift', 'Days Present', 'Work (min)', 'Break (min)', 'Avg Productive %']);
@@ -444,38 +577,39 @@ app.get('/api/reports/export/:ym', auth, async (req, res) => {
 
 // ============ SETTINGS ============
 app.get('/api/settings', auth, (req, res) => {
-  const rows = db.prepare('SELECT key, value FROM settings').all();
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
+  const rows = db.prepare('SELECT key, value FROM settings WHERE tenant_id = ?').all(tid);
   const settings = {};
   rows.forEach((r) => {
     try { settings[r.key] = { value: JSON.parse(r.value) }; }
     catch { settings[r.key] = { value: r.value }; }
   });
-  // Mask bot token in response
   if (settings.bot_config?.value?.bot_token) {
     const t = settings.bot_config.value.bot_token;
     settings.bot_config.value.bot_token_masked = t.length > 8 ? '****' + t.slice(-6) : '****';
     settings.bot_config.value.bot_token = '';
   }
-  const break_settings = db.prepare('SELECT * FROM break_settings').all();
-  const shifts = db.prepare('SELECT * FROM shifts').all();
+  const break_settings = db.prepare('SELECT type, daily_quota_minutes FROM break_settings WHERE tenant_id = ?').all(tid);
+  const shifts = db.prepare('SELECT name, start_time, end_time FROM shifts WHERE tenant_id = ?').all(tid);
   ok(res, { settings, break_settings, shifts });
 });
 
 app.put('/api/settings/breaks', auth, (req, res) => {
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
   const body = req.body || {};
-  const upsert = db.prepare('INSERT INTO break_settings(type,daily_quota_minutes) VALUES(?,?) ON CONFLICT(type) DO UPDATE SET daily_quota_minutes=excluded.daily_quota_minutes');
-  for (const [type, vals] of Object.entries(body)) {
-    upsert.run(type, vals.daily_quota_minutes);
-  }
+  const upsert = db.prepare('INSERT INTO break_settings(tenant_id,type,daily_quota_minutes) VALUES(?,?,?) ON CONFLICT(tenant_id,type) DO UPDATE SET daily_quota_minutes=excluded.daily_quota_minutes');
+  for (const [type, vals] of Object.entries(body)) upsert.run(tid, type, vals.daily_quota_minutes);
   ok(res, {});
 });
 
 app.put('/api/settings/shift-times', auth, (req, res) => {
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
   const body = req.body || {};
-  const upsert = db.prepare('INSERT INTO shifts(name,start_time,end_time) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET start_time=excluded.start_time, end_time=excluded.end_time');
-  for (const [name, vals] of Object.entries(body)) {
-    upsert.run(name, vals.start + ':00', vals.end + ':00');
-  }
+  const upsert = db.prepare('INSERT INTO shifts(tenant_id,name,start_time,end_time) VALUES(?,?,?,?) ON CONFLICT(tenant_id,name) DO UPDATE SET start_time=excluded.start_time, end_time=excluded.end_time');
+  for (const [name, vals] of Object.entries(body)) upsert.run(tid, name, vals.start + ':00', vals.end + ':00');
   ok(res, {});
 });
 
@@ -490,48 +624,63 @@ const KV_ROUTES = {
 };
 for (const [p, fn] of Object.entries(KV_ROUTES)) {
   app.put(p, auth, (req, res) => {
+    const tid = writeTenantId(req);
+    if (!tid) return fail(res, 400, 'No tenant context');
     const [k, v] = fn(req.body || {});
-    setSetting(k, v);
+    setTenantSetting(tid, k, v);
     ok(res, { [k]: v });
   });
 }
 
 app.get('/api/settings/workstations', auth, (req, res) => {
-  ok(res, db.prepare('SELECT * FROM workstations ORDER BY name').all());
+  const sc = scopeTenant(req);
+  ok(res, db.prepare('SELECT * FROM workstations WHERE 1=1' + sc.clause + ' ORDER BY name').all(...sc.params));
 });
 app.post('/api/settings/workstations', auth, (req, res) => {
   const { name, department } = req.body || {};
   if (!name) return fail(res, 400, 'name required');
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
   const tok = crypto.randomBytes(6).toString('hex');
-  const r = db.prepare('INSERT INTO workstations(name,department,qr_token,is_active) VALUES(?,?,?,1)').run(name, department || null, tok);
+  const r = db.prepare('INSERT INTO workstations(tenant_id,name,department,qr_token,is_active) VALUES(?,?,?,?,1)').run(tid, name, department || null, tok);
   ok(res, { id: r.lastInsertRowid, qr_token: tok });
 });
 app.put('/api/settings/workstations/:id/toggle', auth, (req, res) => {
   const id = +req.params.id;
+  const sc = scopeTenant(req);
+  const r = db.prepare('SELECT id FROM workstations WHERE id = ?' + sc.clause).get(id, ...sc.params);
+  if (!r) return fail(res, 404, 'Not found');
   db.prepare('UPDATE workstations SET is_active = 1 - is_active WHERE id = ?').run(id);
   ok(res, { id });
 });
 app.delete('/api/settings/workstations/:id', auth, (req, res) => {
-  db.prepare('DELETE FROM workstations WHERE id = ?').run(+req.params.id);
+  const id = +req.params.id;
+  const sc = scopeTenant(req);
+  const r = db.prepare('SELECT id FROM workstations WHERE id = ?' + sc.clause).get(id, ...sc.params);
+  if (!r) return fail(res, 404, 'Not found');
+  db.prepare('DELETE FROM workstations WHERE id = ?').run(id);
   ok(res, {});
 });
 
 // ============ BOT CONFIG ============
 app.get('/api/bot/status', auth, (req, res) => {
-  ok(res, getBotStatus());
+  const tid = writeTenantId(req);
+  ok(res, getBotStatus(tid));
 });
 
 app.put('/api/settings/bot-config', auth, async (req, res) => {
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
   const { bot_token, monitor_group_chat_id, miniapp_url } = req.body || {};
-  const existing = getSetting('bot_config', {}) || {};
+  const existing = getTenantSetting(tid, 'bot_config', {}) || {};
   const newToken = (bot_token || '').trim();
   const cfg = {
     bot_token: newToken || existing.bot_token || '',
     monitor_group_chat_id: (monitor_group_chat_id ?? existing.monitor_group_chat_id ?? '').toString().trim(),
     miniapp_url: (miniapp_url ?? existing.miniapp_url ?? '').trim(),
   };
-  setSetting('bot_config', cfg);
-  const status = await reloadBot();
+  setTenantSetting(tid, 'bot_config', cfg);
+  const status = await reloadBot(tid);
   res.json({ success: true, status });
 });
 
@@ -575,8 +724,8 @@ app.post('/api/bot/clock-in', tgAuth, (req, res) => {
   const existing = db.prepare('SELECT id FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
   if (existing) return fail(res, 400, 'Sudah clock-in hari ini.');
   const now = new Date();
-  const shiftRow = db.prepare('SELECT start_time FROM shifts WHERE name = ?').get(req.staff.current_shift);
-  const grace = +(getSetting('late_grace_minutes', 5));
+  const shiftRow = db.prepare('SELECT start_time FROM shifts WHERE tenant_id = ? AND name = ?').get(req.staff.tenant_id, req.staff.current_shift);
+  const grace = +(getTenantSetting(req.staff.tenant_id, 'late_grace_minutes', 5));
   let lateMin = 0;
   if (shiftRow?.start_time) {
     const [h, m] = shiftRow.start_time.split(':').map(Number);
@@ -585,8 +734,8 @@ app.post('/api/bot/clock-in', tgAuth, (req, res) => {
     if (diff > grace) lateMin = diff;
   }
   const ip = req.ip || req.headers['x-forwarded-for'] || '';
-  db.prepare('INSERT INTO attendance(staff_id,date,shift,clock_in,late_minutes,ip_address,current_status) VALUES(?,?,?,?,?,?,?)')
-    .run(req.staff.id, today, req.staff.current_shift, now.toISOString(), lateMin, String(ip).slice(0, 45), 'working');
+  db.prepare('INSERT INTO attendance(tenant_id,staff_id,date,shift,clock_in,late_minutes,ip_address,current_status) VALUES(?,?,?,?,?,?,?,?)')
+    .run(req.staff.tenant_id, req.staff.id, today, req.staff.current_shift, now.toISOString(), lateMin, String(ip).slice(0, 45), 'working');
   if (lateMin > 0) {
     notifyLate({ name: req.staff.name, department: req.staff.department }, lateMin, req.staff.current_shift).catch((e) => console.warn('[bot] notifyLate:', e.message));
   }
@@ -615,12 +764,12 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
   const att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
   if (!att) return fail(res, 400, 'Belum clock-in.');
   if (att.current_status !== 'working') return fail(res, 400, 'Sedang break, end dulu.');
-  const bs = db.prepare('SELECT daily_quota_minutes FROM break_settings WHERE type = ?').get(type);
+  const bs = db.prepare('SELECT daily_quota_minutes FROM break_settings WHERE tenant_id = ? AND type = ?').get(req.staff.tenant_id, type);
   const limit = bs?.daily_quota_minutes || 15;
   const now = new Date();
   // Buat break log tanpa QR — QR baru di-generate saat user klik "Back to Work"
-  const r = db.prepare('INSERT INTO break_log(attendance_id,staff_id,type,start_time,limit_minutes) VALUES(?,?,?,?,?)')
-    .run(att.id, req.staff.id, type, now.toISOString(), limit);
+  const r = db.prepare('INSERT INTO break_log(tenant_id,attendance_id,staff_id,type,start_time,limit_minutes) VALUES(?,?,?,?,?,?)')
+    .run(req.staff.tenant_id, att.id, req.staff.id, type, now.toISOString(), limit);
   const statusMap = { smoke: 'smoking', toilet: 'toilet', outside: 'outside' };
   db.prepare('UPDATE attendance SET current_status = ?, break_start = ?, break_type = ?, break_limit = ? WHERE id = ?')
     .run(statusMap[type], now.toISOString(), type, limit, att.id);
@@ -669,7 +818,7 @@ app.post('/api/bot/break-end', tgAuth, (req, res) => {
   const today = todayPP();
   const bl = db.prepare('SELECT * FROM break_log WHERE staff_id = ? AND end_time IS NULL ORDER BY id DESC LIMIT 1').get(req.staff.id);
   if (!bl) return fail(res, 400, 'Tidak ada break aktif.');
-  const qrRequired = !!getSetting('qr_required', false);
+  const qrRequired = !!getTenantSetting(req.staff.tenant_id, 'qr_required', false);
   if (qrRequired) return fail(res, 400, 'QR scan required. Scan QR dari grup monitor.');
   const now = new Date();
   const dur = Math.round((now - new Date(bl.start_time)) / 60000);
@@ -699,12 +848,26 @@ app.use((err, req, res, next) => {
 });
 
 function ensureAdminUser() {
-  const existing = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
-  if (existing) return false;
-  const pwd = process.env.ADMIN_INITIAL_PASSWORD || 'admin123';
-  const hash = bcrypt.hashSync(pwd, 8);
-  db.prepare('INSERT INTO users(username,password_hash,name,role) VALUES(?,?,?,?)').run('admin', hash, 'Administrator', 'admin');
-  console.log(`[backend] admin user created (admin / ${pwd}) — change password ASAP`);
+  const defaultTid = getDefaultTenantId();
+  // Super admin: can see all tenants
+  const superExists = db.prepare('SELECT id FROM users WHERE username = ?').get('superadmin');
+  if (!superExists) {
+    const pwd = process.env.SUPERADMIN_INITIAL_PASSWORD || 'super123';
+    const hash = bcrypt.hashSync(pwd, 8);
+    db.prepare('INSERT INTO users(username,password_hash,name,role,tenant_id) VALUES(?,?,?,?,NULL)').run('superadmin', hash, 'Super Administrator', 'super_admin');
+    console.log(`[backend] super_admin created (superadmin / ${pwd}) — change password ASAP`);
+  }
+  // Tenant admin (PanenGroup): for backwards compat and default tenant access
+  const existing = db.prepare('SELECT id, tenant_id FROM users WHERE username = ?').get('admin');
+  if (!existing) {
+    const pwd = process.env.ADMIN_INITIAL_PASSWORD || 'admin123';
+    const hash = bcrypt.hashSync(pwd, 8);
+    db.prepare('INSERT INTO users(username,password_hash,name,role,tenant_id) VALUES(?,?,?,?,?)').run('admin', hash, 'Administrator', 'admin', defaultTid);
+    console.log(`[backend] admin (PanenGroup) created (admin / ${pwd}) — change password ASAP`);
+  } else if (!existing.tenant_id && defaultTid) {
+    db.prepare('UPDATE users SET tenant_id = ? WHERE id = ?').run(defaultTid, existing.id);
+    console.log('[backend] existing admin reassigned to PanenGroup tenant');
+  }
   return true;
 }
 

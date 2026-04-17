@@ -261,6 +261,31 @@ function migrateV2_MultiTenant() {
     `);
   }
 
+  // schedules table: drop legacy UNIQUE(month) if exists, replace with UNIQUE(tenant_id, month)
+  try {
+    const schMaster = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='schedules'`).get();
+    const needsRecreate = schMaster && /month\s+TEXT\s+UNIQUE/i.test(schMaster.sql || '');
+    if (needsRecreate) {
+      db.exec(`
+        CREATE TABLE schedules_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tenant_id INTEGER,
+          month TEXT,
+          status TEXT DEFAULT 'draft',
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(tenant_id, month)
+        );
+        INSERT INTO schedules_new(id, tenant_id, month, status, created_at)
+          SELECT id, tenant_id, month, status, created_at FROM schedules;
+        DROP TABLE schedules;
+        ALTER TABLE schedules_new RENAME TO schedules;
+      `);
+      console.log('[db] schedules: replaced UNIQUE(month) with UNIQUE(tenant_id, month)');
+    }
+  } catch (e) { console.warn('[db] schedules migration:', e.message); }
+
+  // workstations table: qr_token UNIQUE remains (tokens are global-unique by design)
+
   // Indexes for tenant_id lookups
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_staff_tenant ON staff(tenant_id);

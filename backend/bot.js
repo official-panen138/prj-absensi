@@ -1,7 +1,7 @@
 import { Bot, InlineKeyboard, InputFile, session } from 'grammy';
 import crypto from 'node:crypto';
 import QRCode from 'qrcode';
-import { db, getSetting } from './db.js';
+import { db, getSetting, getTenantSetting, getDefaultTenantId } from './db.js';
 
 const DEPARTMENTS = ['Customer Service', 'Finance', 'Captain', 'SEO Marketing', 'Social Media Marketing', 'CRM', 'Telemarketing'];
 const CATEGORIES = [{ key: 'indonesian', label: 'Indonesian' }, { key: 'local', label: 'Cambodian' }];
@@ -10,8 +10,9 @@ let currentBot = null;
 let currentInfo = null;
 let currentToken = null;
 
-function readConfig() {
-  const cfg = getSetting('bot_config', {}) || {};
+function readConfig(tenantId) {
+  const tid = tenantId || getDefaultTenantId();
+  const cfg = (tid ? getTenantSetting(tid, 'bot_config', {}) : getSetting('bot_config', {})) || {};
   // Priority: env var > DB setting. Env vars in Railway survive DB resets.
   return {
     token: (process.env.BOT_TOKEN || cfg.bot_token || '').trim() || null,
@@ -200,8 +201,8 @@ async function handleQrScan(ctx, payload) {
 }
 
 // ============ Public API ============
-export async function reloadBot() {
-  const { token } = readConfig();
+export async function reloadBot(tenantId) {
+  const { token } = readConfig(tenantId);
   if (currentBot && currentToken === token) return { changed: false, ...getBotStatus() };
   if (currentBot) {
     try { await currentBot.stop(); } catch {}
@@ -228,13 +229,14 @@ export async function reloadBot() {
   }
 }
 
-export function getBotStatus() {
+export function getBotStatus(tenantId) {
+  const cfg = readConfig(tenantId);
   return {
     running: !!currentBot,
     username: currentInfo?.username || null,
     has_token: !!currentToken,
-    monitor_group_set: !!readConfig().monitorGroupId,
-    miniapp_url: readConfig().miniappUrl,
+    monitor_group_set: !!cfg.monitorGroupId,
+    miniapp_url: cfg.miniappUrl,
   };
 }
 
