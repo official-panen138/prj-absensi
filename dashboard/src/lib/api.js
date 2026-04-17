@@ -1,11 +1,13 @@
 export const API_BASE = '/api';
 
 export async function apiFetch(token, path, opts = {}) {
+  const tenantOverride = localStorage.getItem('wms_tenant_override');
   const res = await fetch(`${API_BASE}${path}`, {
     ...opts,
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(tenantOverride ? { 'X-Tenant-Id': tenantOverride } : {}),
       ...(opts.headers || {}),
     },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
