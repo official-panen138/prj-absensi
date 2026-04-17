@@ -21,8 +21,8 @@ export default function ActivityLogPage({ token }) {
   logs.forEach((log) => {
     if (log.clock_in) events.push({ time: log.clock_in, staff: log.name, dept: log.department, event: 'START', detail: `Shift: ${log.shift}${log.late_minutes > 0 ? ` · Late ${log.late_minutes}m` : ''}`, ip: log.ip_address, color: 'text-emerald-400', icon: '▶️' });
     (log.breaks || []).forEach((b) => {
-      events.push({ time: b.start_time, staff: log.name, dept: log.department, event: 'break-start', detail: `${BREAK_TYPE_LABEL[b.type] || b.type} started`, ip: '', color: 'text-yellow-400', icon: '⏸' });
-      if (b.end_time) events.push({ time: b.end_time, staff: log.name, dept: log.department, event: 'break-end', detail: `${BREAK_TYPE_LABEL[b.type] || b.type} ended — ${b.duration_minutes}m${b.is_overtime ? ' ⚠️ OVERTIME' : ''}`, ip: '', color: b.is_overtime ? 'text-red-400' : 'text-emerald-400', icon: '▶' });
+      events.push({ time: b.start_time, staff: log.name, dept: log.department, event: 'break-start', detail: `${BREAK_TYPE_LABEL[b.type] || b.type} started`, ip: b.ip_address_start || log.ip_address || '', color: 'text-yellow-400', icon: '⏸' });
+      if (b.end_time) events.push({ time: b.end_time, staff: log.name, dept: log.department, event: 'break-end', detail: `${BREAK_TYPE_LABEL[b.type] || b.type} ended — ${b.duration_minutes}m${b.is_overtime ? ' ⚠️ OVERTIME' : ''}`, ip: b.ip_address_end || log.ip_address || '', color: b.is_overtime ? 'text-red-400' : 'text-emerald-400', icon: '▶' });
     });
     if (log.clock_out) events.push({ time: log.clock_out, staff: log.name, dept: log.department, event: 'END', detail: `Productivity: ${log.productive_ratio}%`, ip: log.ip_address, color: 'text-red-400', icon: '⏹' });
   });

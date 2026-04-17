@@ -172,6 +172,16 @@ function migrateV2_MultiTenant() {
     }
   }
 
+  // break_log: tambah kolom ip_address_start & ip_address_end untuk audit IP break
+  if (!hasColumn('break_log', 'ip_address_start')) {
+    db.exec('ALTER TABLE break_log ADD COLUMN ip_address_start TEXT');
+    console.log('[db] added ip_address_start to break_log');
+  }
+  if (!hasColumn('break_log', 'ip_address_end')) {
+    db.exec('ALTER TABLE break_log ADD COLUMN ip_address_end TEXT');
+    console.log('[db] added ip_address_end to break_log');
+  }
+
   // Backfill: all existing rows (except super_admin users) get assigned to PanenGroup
   for (const t of ['staff', 'schedules', 'schedule_daily', 'attendance', 'break_log', 'swap_requests', 'workstations']) {
     const updated = db.prepare(`UPDATE ${t} SET tenant_id = ? WHERE tenant_id IS NULL`).run(defaultTenantId);

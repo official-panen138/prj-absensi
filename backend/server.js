@@ -334,7 +334,8 @@ app.get('/api/activity/log/:date', auth, (req, res) => {
 
   const sc2 = scopeTenant(req, 's2.tenant_id');
   const breaks = db.prepare(`
-    SELECT bl.attendance_id, bl.type, bl.start_time, bl.end_time, bl.duration_minutes, bl.is_overtime
+    SELECT bl.attendance_id, bl.type, bl.start_time, bl.end_time, bl.duration_minutes, bl.is_overtime,
+           bl.ip_address_start, bl.ip_address_end
     FROM break_log bl JOIN staff s2 ON s2.id = bl.staff_id
     WHERE DATE(bl.start_time) = ?${sc2.clause}
   `).all(date, ...sc2.params);
@@ -903,9 +904,10 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
   }
 
   const now = new Date();
+  const ipStart = String(req.ip || req.headers['x-forwarded-for'] || '').slice(0, 45);
   // Buat break log tanpa QR — QR baru di-generate saat user klik "Back to Work"
-  const r = db.prepare('INSERT INTO break_log(tenant_id,attendance_id,staff_id,type,start_time,limit_minutes) VALUES(?,?,?,?,?,?)')
-    .run(req.staff.tenant_id, att.id, req.staff.id, type, now.toISOString(), limit);
+  const r = db.prepare('INSERT INTO break_log(tenant_id,attendance_id,staff_id,type,start_time,limit_minutes,ip_address_start) VALUES(?,?,?,?,?,?,?)')
+    .run(req.staff.tenant_id, att.id, req.staff.id, type, now.toISOString(), limit, ipStart);
   const statusMap = { smoke: 'smoking', toilet: 'toilet', outside: 'outside' };
   db.prepare('UPDATE attendance SET current_status = ?, break_start = ?, break_type = ?, break_limit = ? WHERE id = ?')
     .run(statusMap[type], now.toISOString(), type, limit, att.id);
@@ -940,7 +942,8 @@ app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
   const now = new Date();
   const dur = Math.round((now - new Date(bl.start_time)) / 60000);
   const overtime = dur > (bl.limit_minutes || 9999) ? 1 : 0;
-  db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = ?, is_overtime = ? WHERE id = ?').run(now.toISOString(), dur, overtime, bl.id);
+  const ipEnd = String(req.ip || req.headers['x-forwarded-for'] || '').slice(0, 45);
+  db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = ?, is_overtime = ?, ip_address_end = ? WHERE id = ?').run(now.toISOString(), dur, overtime, ipEnd, bl.id);
   db.prepare(`UPDATE attendance SET current_status = ?, break_start = NULL, break_type = NULL, break_limit = NULL,
               total_break_minutes = COALESCE(total_break_minutes,0) + ?, break_violations = COALESCE(break_violations,0) + ?
               WHERE staff_id = ? AND date = ?`)
@@ -961,7 +964,8 @@ app.post('/api/bot/break-end', tgAuth, (req, res) => {
   const now = new Date();
   const dur = Math.round((now - new Date(bl.start_time)) / 60000);
   const overtime = dur > (bl.limit_minutes || 9999) ? 1 : 0;
-  db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = ?, is_overtime = ? WHERE id = ?').run(now.toISOString(), dur, overtime, bl.id);
+  const ipEnd = String(req.ip || req.headers['x-forwarded-for'] || '').slice(0, 45);
+  db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = ?, is_overtime = ?, ip_address_end = ? WHERE id = ?').run(now.toISOString(), dur, overtime, ipEnd, bl.id);
   db.prepare(`UPDATE attendance SET current_status = ?, break_start = NULL, break_type = NULL, break_limit = NULL,
               total_break_minutes = COALESCE(total_break_minutes,0) + ?, break_violations = COALESCE(break_violations,0) + ?
               WHERE staff_id = ? AND date = ?`)
