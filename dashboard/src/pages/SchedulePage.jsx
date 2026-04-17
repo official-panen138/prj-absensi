@@ -92,6 +92,8 @@ export default function SchedulePage({ token, user }) {
         const row = rows[r];
         const staffName = String(row[0] || '').trim();
         if (!staffName) continue;
+        // Skip department separator rows (format: "== DEPT NAME (count) ==")
+        if (/^==\s*.+\s*==$/.test(staffName)) continue;
 
         for (let c = dateColStart; c < header.length; c++) {
           const dayNum = parseInt(String(header[c]).trim());

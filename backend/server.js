@@ -386,27 +386,44 @@ app.get('/api/schedule/:ym/export', auth, async (req, res) => {
   const [y, m] = ym.split('-').map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
   const sc = scopeTenant(req);
-  const staff = db.prepare('SELECT id, name, department FROM staff WHERE is_active = 1' + sc.clause + ' ORDER BY name').all(...sc.params);
+  const staff = db.prepare('SELECT id, name, department FROM staff WHERE is_active = 1' + sc.clause + ' ORDER BY department, name').all(...sc.params);
   const days = db.prepare('SELECT staff_id, date, status, shift FROM schedule_daily WHERE date LIKE ?' + sc.clause).all(ym + '-%', ...sc.params);
   const key = (sid, d) => `${sid}_${d}`;
   const lookup = {};
   days.forEach((x) => { lookup[key(x.staff_id, x.date)] = x; });
+
+  // Group by department
+  const groups = {};
+  staff.forEach((s) => {
+    const dept = s.department || '(Tanpa Department)';
+    if (!groups[dept]) groups[dept] = [];
+    groups[dept].push(s);
+  });
+  const sortedDepts = Object.keys(groups).sort((a, b) => a.localeCompare(b));
 
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet(`Schedule ${ym}`);
   const header = ['Name', 'Department', ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
   ws.addRow(header);
   const shiftMap = { morning: 'M', middle: 'D', night: 'N' };
-  staff.forEach((s) => {
-    const row = [s.name, s.department || ''];
-    for (let d = 1; d <= daysInMonth; d++) {
-      const date = `${ym}-${String(d).padStart(2, '0')}`;
-      const entry = lookup[key(s.id, date)];
-      if (!entry) row.push('');
-      else if (entry.status === 'work') row.push(shiftMap[entry.shift] || 'W');
-      else row.push(entry.status.toUpperCase());
-    }
-    ws.addRow(row);
+
+  sortedDepts.forEach((dept, idx) => {
+    // Department separator row
+    const sepRow = ws.addRow([`== ${dept.toUpperCase()} (${groups[dept].length}) ==`]);
+    sepRow.font = { bold: true, color: { argb: 'FF34D399' } };
+    sepRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } };
+
+    groups[dept].forEach((s) => {
+      const row = [s.name, s.department || ''];
+      for (let d = 1; d <= daysInMonth; d++) {
+        const date = `${ym}-${String(d).padStart(2, '0')}`;
+        const entry = lookup[key(s.id, date)];
+        if (!entry) row.push('');
+        else if (entry.status === 'work') row.push(shiftMap[entry.shift] || 'W');
+        else row.push(entry.status.toUpperCase());
+      }
+      ws.addRow(row);
+    });
   });
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename=schedule-${ym}.xlsx`);
