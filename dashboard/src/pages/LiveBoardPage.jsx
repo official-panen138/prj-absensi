@@ -12,6 +12,12 @@ export default function LiveBoardPage({ token }) {
   const [toast, setToast] = useState(null);
   const [forceLoading, setForceLoading] = useState(null);
   const [activeFilter, setActiveFilter] = useState(null);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const iv = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(iv);
+  }, []);
 
   const fetchLive = useCallback(async () => {
     try {
@@ -130,13 +136,14 @@ export default function LiveBoardPage({ token }) {
           <div className="text-[11px] font-bold text-amber-400 mb-2">⏱ ACTIVE BREAKS ({breaks.length})</div>
           <div className="flex flex-wrap gap-2">
             {breaks.map((b) => {
-              const elapsed = Math.round(b.elapsed_minutes || 0);
-              const over = elapsed > (b.limit_minutes || 15);
+              const elapsedSec = Math.max(0, Math.floor((now - new Date(b.start_time).getTime()) / 1000));
+              const elapsed = Math.floor(elapsedSec / 60);
+              const over = elapsed >= (b.limit_minutes || 15);
               return (
                 <div key={b.id} className={`px-2.5 py-1 bg-gray-800 rounded-md border text-xs ${over ? 'border-red-500/50' : 'border-gray-700'}`}>
                   <strong>{b.name}</strong>{' '}
                   <span className="text-gray-400">{BREAK_TYPE_LABEL[b.type] || b.type}</span>{' '}
-                  <span className={`font-mono ${over ? 'text-red-400' : 'text-yellow-400'}`}>{elapsed}m/{b.limit_minutes}m</span>
+                  <span className={`font-mono ${over ? 'text-red-400' : 'text-yellow-400'}`}>{elapsed}m {String(elapsedSec % 60).padStart(2, '0')}s / {b.limit_minutes}m</span>
                   {over && <span className="text-red-400"> 🔴</span>}
                 </div>
               );
@@ -179,8 +186,10 @@ export default function LiveBoardPage({ token }) {
                       const isOnline = staff.clock_in && !staff.clock_out;
                       const sc = statusColor(staff.current_status);
                       const scHex = statusColorHex(staff.current_status);
-                      const breakElapsed = staff.break_start ? Math.floor((Date.now() - new Date(staff.break_start)) / 60000) : 0;
-                      const breakOver = staff.break_limit && breakElapsed > staff.break_limit;
+                      const breakElapsedSec = staff.break_start ? Math.max(0, Math.floor((now - new Date(staff.break_start).getTime()) / 1000)) : 0;
+                      const breakElapsed = Math.floor(breakElapsedSec / 60);
+                      const breakElapsedLabel = `${breakElapsed}m ${String(breakElapsedSec % 60).padStart(2, '0')}s`;
+                      const breakOver = staff.break_limit && breakElapsed >= staff.break_limit;
                       return (
                         <Card key={staff.id} className={`p-3.5 transition-all duration-200 ${isOnline ? (breakOver ? 'border-red-500/20' : '') : 'opacity-50'}`}>
                           <div className="flex justify-between items-start mb-2">
@@ -196,9 +205,9 @@ export default function LiveBoardPage({ token }) {
                           <div className={`text-xs font-semibold mb-1.5 ${sc}`}>{isOnline ? (STATUS_LABEL[staff.current_status] || staff.current_status) : '⭘ Not Started'}</div>
                           {staff.break_start && staff.current_status !== 'working' && isOnline && (
                             <div className="mb-1.5">
-                              <div className={`bg-gray-800 rounded px-2 py-1 text-[11px] font-mono ${breakOver ? 'text-red-400' : 'text-yellow-400'}`}>⏱ {breakElapsed}m / {staff.break_limit}m</div>
+                              <div className={`bg-gray-800 rounded px-2 py-1 text-[11px] font-mono ${breakOver ? 'text-red-400' : 'text-yellow-400'}`}>⏱ {breakElapsedLabel} / {staff.break_limit}m</div>
                               <div className="h-[3px] bg-gray-700 rounded-sm mt-1 overflow-hidden">
-                                <div className={`h-full rounded-sm transition-all duration-500 ${breakOver ? 'bg-red-400' : 'bg-yellow-400'}`} style={{ width: `${Math.min(100, (breakElapsed / (staff.break_limit || 1)) * 100)}%` }} />
+                                <div className={`h-full rounded-sm transition-all duration-500 ${breakOver ? 'bg-red-400' : 'bg-yellow-400'}`} style={{ width: `${Math.min(100, (breakElapsedSec / ((staff.break_limit || 1) * 60)) * 100)}%` }} />
                               </div>
                             </div>
                           )}
