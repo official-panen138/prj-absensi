@@ -186,12 +186,17 @@ async function handleQrScan(ctx, payload) {
 
   const now = new Date();
   const dur = Math.round((now - new Date(bl.start_time)) / 60000);
+  const overtime = dur > (bl.limit_minutes || 9999) ? 1 : 0;
   db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = ?, is_overtime = ? WHERE id = ?')
-    .run(now.toISOString(), dur, dur > (bl.limit_minutes || 9999) ? 1 : 0, breakId);
+    .run(now.toISOString(), dur, overtime, breakId);
   db.prepare('UPDATE attendance SET current_status = ?, break_start = NULL, break_type = NULL, break_limit = NULL WHERE staff_id = ? AND date = ?')
     .run('working', bl.staff_id, new Date().toISOString().slice(0, 10));
 
-  return ctx.reply(`✅ Welcome back, ${staff.name}! Break: ${dur}m${dur > (bl.limit_minutes || 0) ? ' ⚠️ overtime' : ''}.`, { reply_markup: openMiniAppKeyboard() });
+  if (overtime) {
+    notifyOvertime({ name: staff.name, department: staff.department }, bl.type, dur, bl.limit_minutes).catch(() => {});
+  }
+
+  return ctx.reply(`✅ Welcome back, ${staff.name}! Break: ${dur}m${overtime ? ' ⚠️ overtime' : ''}.`, { reply_markup: openMiniAppKeyboard() });
 }
 
 // ============ Public API ============
@@ -231,6 +236,35 @@ export function getBotStatus() {
     monitor_group_set: !!readConfig().monitorGroupId,
     miniapp_url: readConfig().miniappUrl,
   };
+}
+
+async function notifyMonitor(text) {
+  if (!currentBot) return;
+  const { monitorGroupId } = readConfig();
+  if (!monitorGroupId) return;
+  try {
+    await currentBot.api.sendMessage(monitorGroupId, text, { parse_mode: 'Markdown' });
+  } catch (e) { console.warn('[bot] notifyMonitor failed:', e.message); }
+}
+
+export async function notifyLate(staff, lateMin, shift) {
+  const muted = (getSetting('notification_prefs', {}) || {}).muted_types || [];
+  if (muted.includes('late')) return;
+  const dept = staff.department ? ` · ${staff.department}` : '';
+  await notifyMonitor(`⚠️ *TELAT* — ${staff.name}${dept}\n⏱ ${lateMin} menit · shift _${shift}_`);
+}
+
+export async function notifyOvertime(staff, breakType, durationMin, limitMin) {
+  const muted = (getSetting('notification_prefs', {}) || {}).muted_types || [];
+  if (muted.includes('break_overtime')) return;
+  const labels = { smoke: '🚬 Smoke', toilet: '🚻 Toilet', outside: '🏪 Go Out' };
+  const overMin = Math.max(0, durationMin - limitMin);
+  const dept = staff.department ? ` · ${staff.department}` : '';
+  await notifyMonitor(
+    `⏰ *OVERTIME BREAK* — ${staff.name}${dept}\n` +
+    `${labels[breakType] || breakType}: *${durationMin}m* / limit ${limitMin}m\n` +
+    `Lewat: *+${overMin} menit*`
+  );
 }
 
 export async function notifyApproved(telegramId, name) {

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { db, getSetting, setSetting } from './db.js';
-import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, pushBreakQRToMonitor } from './bot.js';
+import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, pushBreakQRToMonitor } from './bot.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -587,6 +587,9 @@ app.post('/api/bot/clock-in', tgAuth, (req, res) => {
   const ip = req.ip || req.headers['x-forwarded-for'] || '';
   db.prepare('INSERT INTO attendance(staff_id,date,shift,clock_in,late_minutes,ip_address,current_status) VALUES(?,?,?,?,?,?,?)')
     .run(req.staff.id, today, req.staff.current_shift, now.toISOString(), lateMin, String(ip).slice(0, 45), 'working');
+  if (lateMin > 0) {
+    notifyLate({ name: req.staff.name, department: req.staff.department }, lateMin, req.staff.current_shift).catch((e) => console.warn('[bot] notifyLate:', e.message));
+  }
   ok(res, { clock_in: now.toISOString(), late_minutes: lateMin });
 });
 
@@ -656,6 +659,9 @@ app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
               total_break_minutes = COALESCE(total_break_minutes,0) + ?, break_violations = COALESCE(break_violations,0) + ?
               WHERE staff_id = ? AND date = ?`)
     .run('working', dur, overtime, req.staff.id, todayPP());
+  if (overtime) {
+    notifyOvertime({ name: req.staff.name, department: req.staff.department }, bl.type, dur, bl.limit_minutes).catch((e) => console.warn('[bot] notifyOvertime:', e.message));
+  }
   ok(res, { duration_minutes: dur, is_overtime: !!overtime });
 });
 
