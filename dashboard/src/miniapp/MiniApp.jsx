@@ -154,32 +154,12 @@ export default function MiniApp() {
 
       {onBreak && (() => {
         const elapsedSec = att.break_start ? Math.max(0, Math.floor((now - new Date(att.break_start).getTime()) / 1000)) : 0;
-        const limitSec = (att.break_limit || 0) * 60;
-        const remainingSec = limitSec - elapsedSec;
-        const overtime = remainingSec < 0;
-        const pct = limitSec ? Math.min(100, (elapsedSec / limitSec) * 100) : 0;
-        const fmt = (s) => `${Math.floor(Math.abs(s) / 60)}m ${String(Math.abs(s) % 60).padStart(2, '0')}s`;
-        const barColor = overtime ? '#ef4444' : pct > 80 ? '#fbbf24' : '#34d399';
-        const textColor = overtime ? '#fca5a5' : pct > 80 ? '#fbbf24' : '#34d399';
+        const fmt = (s) => `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
         return (
           <>
-            <div style={{padding:'14px 12px',background:'rgb(31 41 55)',border:`1px solid ${overtime ? 'rgba(239,68,68,0.5)' : 'rgb(55 65 81)'}`,borderRadius:12,marginBottom:14}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
-                <span style={{fontSize:11,color:'#9ca3af',letterSpacing:1}}>{overtime ? 'OVERTIME' : 'TIME ELAPSED'}</span>
-                <span style={{fontFamily:'monospace',fontWeight:700,fontSize:18,color:textColor}}>
-                  {overtime ? '+' : ''}{fmt(overtime ? -remainingSec : elapsedSec)}
-                </span>
-              </div>
-              <div style={{height:6,background:'rgb(55 65 81)',borderRadius:3,overflow:'hidden'}}>
-                <div style={{height:'100%',width:`${pct}%`,background:barColor,transition:'width .5s'}} />
-              </div>
-              <div style={{display:'flex',justifyContent:'space-between',marginTop:6,fontSize:10,color:'#6b7280',fontFamily:'monospace'}}>
-                <span>{fmt(elapsedSec)} elapsed</span>
-                <span>limit: {att.break_limit}m</span>
-              </div>
-              {overtime && <div style={{marginTop:8,padding:'6px 10px',background:'rgba(239,68,68,0.15)',color:'#fca5a5',borderRadius:6,fontSize:11,textAlign:'center'}}>⚠ Anda melewati batas waktu break</div>}
+            <div style={{textAlign:'center',marginBottom:14,fontFamily:'monospace',fontSize:28,fontWeight:700,color:'#fbbf24'}}>
+              ⏱ {fmt(elapsedSec)}
             </div>
-
             <div style={{padding:'12px',background:'rgba(251,191,36,0.1)',border:'1px solid rgba(251,191,36,0.3)',borderRadius:10,fontSize:12,color:'#fbbf24',marginBottom:14,textAlign:'center'}}>
               ⏱ Break aktif. Klik tombol di bawah → kamera akan terbuka untuk scan QR di grup monitor.
             </div>
