@@ -145,60 +145,88 @@ export default function LiveBoardPage({ token }) {
         </Card>
       )}
 
-      {/* Staff Cards */}
+      {/* Staff Cards (grouped by department) */}
       {loading ? (
         <div className="flex justify-center p-16"><Spinner /></div>
       ) : filteredData.length === 0 ? (
         <Card className="p-10 text-center text-gray-500">{activeFilter ? `No staff matching "${filterLabel}".` : 'No staff data.'}</Card>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5">
-          {filteredData.map((staff) => {
-            const isOnline = staff.clock_in && !staff.clock_out;
-            const sc = statusColor(staff.current_status);
-            const scHex = statusColorHex(staff.current_status);
-            const breakElapsed = staff.break_start ? Math.floor((Date.now() - new Date(staff.break_start)) / 60000) : 0;
-            const breakOver = staff.break_limit && breakElapsed > staff.break_limit;
-            return (
-              <Card key={staff.id} className={`p-3.5 transition-all duration-200 ${isOnline ? (breakOver ? 'border-red-500/20' : '') : 'opacity-50'}`}>
-                <div className="flex justify-between items-start mb-2">
-                  <div>
-                    <div className="font-bold text-[13px]">{staff.name}</div>
-                    <div className="text-[11px] text-gray-500">{staff.department}</div>
+      ) : (() => {
+        // Group by department
+        const groups = {};
+        filteredData.forEach((s) => {
+          const dept = s.department || '(Tanpa Department)';
+          if (!groups[dept]) groups[dept] = [];
+          groups[dept].push(s);
+        });
+        const sortedDepts = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+
+        return (
+          <div className="flex flex-col gap-5">
+            {sortedDepts.map((dept) => {
+              const list = groups[dept];
+              const onlineCount = list.filter((s) => s.clock_in && !s.clock_out).length;
+              return (
+                <div key={dept}>
+                  <div className="flex items-center gap-2 mb-2.5 px-1">
+                    <div className="w-1 h-5 bg-emerald-400 rounded-sm" />
+                    <h2 className="text-[13px] font-bold text-gray-200 uppercase tracking-wider">{dept}</h2>
+                    <span className="text-[11px] text-gray-500 font-mono">
+                      {list.length} staff · {onlineCount} online
+                    </span>
                   </div>
-                  <div className="flex flex-col items-end gap-1">
-                    {isOnline && <div className="w-2 h-2 rounded-full pulse-dot" style={{ color: scHex, backgroundColor: scHex }} />}
-                    {breakOver && <span className="text-[10px] text-red-400 font-bold">OVERTIME</span>}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5">
+                    {list.map((staff) => {
+                      const isOnline = staff.clock_in && !staff.clock_out;
+                      const sc = statusColor(staff.current_status);
+                      const scHex = statusColorHex(staff.current_status);
+                      const breakElapsed = staff.break_start ? Math.floor((Date.now() - new Date(staff.break_start)) / 60000) : 0;
+                      const breakOver = staff.break_limit && breakElapsed > staff.break_limit;
+                      return (
+                        <Card key={staff.id} className={`p-3.5 transition-all duration-200 ${isOnline ? (breakOver ? 'border-red-500/20' : '') : 'opacity-50'}`}>
+                          <div className="flex justify-between items-start mb-2">
+                            <div>
+                              <div className="font-bold text-[13px]">{staff.name}</div>
+                              <div className="text-[11px] text-gray-500">{staff.department}</div>
+                            </div>
+                            <div className="flex flex-col items-end gap-1">
+                              {isOnline && <div className="w-2 h-2 rounded-full pulse-dot" style={{ color: scHex, backgroundColor: scHex }} />}
+                              {breakOver && <span className="text-[10px] text-red-400 font-bold">OVERTIME</span>}
+                            </div>
+                          </div>
+                          <div className={`text-xs font-semibold mb-1.5 ${sc}`}>{isOnline ? (STATUS_LABEL[staff.current_status] || staff.current_status) : '⭘ Not Started'}</div>
+                          {staff.break_start && staff.current_status !== 'working' && isOnline && (
+                            <div className="mb-1.5">
+                              <div className={`bg-gray-800 rounded px-2 py-1 text-[11px] font-mono ${breakOver ? 'text-red-400' : 'text-yellow-400'}`}>⏱ {breakElapsed}m / {staff.break_limit}m</div>
+                              <div className="h-[3px] bg-gray-700 rounded-sm mt-1 overflow-hidden">
+                                <div className={`h-full rounded-sm transition-all duration-500 ${breakOver ? 'bg-red-400' : 'bg-yellow-400'}`} style={{ width: `${Math.min(100, (breakElapsed / (staff.break_limit || 1)) * 100)}%` }} />
+                              </div>
+                            </div>
+                          )}
+                          <div className="flex justify-between items-center">
+                            <Badge color={staff.category === 'indonesian' ? 'emerald' : 'purple'}>{staff.category === 'indonesian' ? 'Indonesian' : 'Cambodian'}</Badge>
+                            <div className="text-[10px] text-gray-500 font-mono">
+                              {isOnline && <>▶ {fmtTime(staff.clock_in)}{staff.late_minutes > 0 && <span className="text-red-400"> +{staff.late_minutes}m</span>}</>}
+                            </div>
+                          </div>
+                          {isOnline && (
+                            <button
+                              onClick={() => forceClockOut(staff)}
+                              disabled={forceLoading === staff.id}
+                              className={`mt-2.5 w-full py-1 rounded-md bg-transparent border border-red-500/30 text-red-400 text-[11px] cursor-pointer transition-all duration-150 hover:bg-red-500/10 ${forceLoading === staff.id ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            >
+                              {forceLoading === staff.id ? '⏳ Processing...' : 'Force END'}
+                            </button>
+                          )}
+                        </Card>
+                      );
+                    })}
                   </div>
                 </div>
-                <div className={`text-xs font-semibold mb-1.5 ${sc}`}>{isOnline ? (STATUS_LABEL[staff.current_status] || staff.current_status) : '⭘ Not Started'}</div>
-                {staff.break_start && staff.current_status !== 'working' && isOnline && (
-                  <div className="mb-1.5">
-                    <div className={`bg-gray-800 rounded px-2 py-1 text-[11px] font-mono ${breakOver ? 'text-red-400' : 'text-yellow-400'}`}>⏱ {breakElapsed}m / {staff.break_limit}m</div>
-                    <div className="h-[3px] bg-gray-700 rounded-sm mt-1 overflow-hidden">
-                      <div className={`h-full rounded-sm transition-all duration-500 ${breakOver ? 'bg-red-400' : 'bg-yellow-400'}`} style={{ width: `${Math.min(100, (breakElapsed / (staff.break_limit || 1)) * 100)}%` }} />
-                    </div>
-                  </div>
-                )}
-                <div className="flex justify-between items-center">
-                  <Badge color={staff.category === 'indonesian' ? 'emerald' : 'purple'}>{staff.category === 'indonesian' ? 'Indonesian' : 'Cambodian'}</Badge>
-                  <div className="text-[10px] text-gray-500 font-mono">
-                    {isOnline && <>▶ {fmtTime(staff.clock_in)}{staff.late_minutes > 0 && <span className="text-red-400"> +{staff.late_minutes}m</span>}</>}
-                  </div>
-                </div>
-                {isOnline && (
-                  <button
-                    onClick={() => forceClockOut(staff)}
-                    disabled={forceLoading === staff.id}
-                    className={`mt-2.5 w-full py-1 rounded-md bg-transparent border border-red-500/30 text-red-400 text-[11px] cursor-pointer transition-all duration-150 hover:bg-red-500/10 ${forceLoading === staff.id ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  >
-                    {forceLoading === staff.id ? '⏳ Processing...' : 'Force END'}
-                  </button>
-                )}
-              </Card>
-            );
-          })}
-        </div>
-      )}
+              );
+            })}
+          </div>
+        );
+      })()}
     </div>
   );
 }

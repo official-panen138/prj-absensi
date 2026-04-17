@@ -357,55 +357,74 @@ export default function SchedulePage({ token, user }) {
                 </tr>
               </thead>
               <tbody>
-                {staffList.map((staff) => (
-                  <tr key={staff.staff_id}>
-                    <td className="sticky left-0 z-[5] bg-gray-900 px-2 py-1 border-b border-r border-gray-700 font-semibold text-[11px] whitespace-nowrap">
-                      <div>{staff.name}</div>
-                      <div className="text-[9px] text-gray-500">{staff.department || ''}</div>
-                    </td>
-                    {days.map((d) => {
-                      const dayData = (staff.days || []).find((day) => (day.date || '').substring(0, 10) === d.dateStr);
-                      const st = dayData?.status || null;
-                      const shift = dayData?.shift || null;
-                      const isManual = dayData?.is_manual_override;
-                      const isEmpty = !dayData;
-                      const isToday = d.dateStr === today;
-
-                      // STEP 6: Color coding
-                      let cellColor = '';
-                      let cellText = '';
-                      if (!isEmpty) {
-                        if (st === 'work') {
-                          cellColor = cellColorMap[`work-${shift}`] || '';
-                          cellText = cellLabelMap[shift] || '';
-                        } else if (st === 'off') {
-                          cellColor = cellColorMap['off'];
-                          cellText = 'OFF';
-                        } else if (st === 'sick') {
-                          cellColor = cellColorMap['sick'];
-                          cellText = 'S';
-                        } else if (st === 'leave') {
-                          cellColor = cellColorMap['leave'];
-                          cellText = 'L';
+                {(() => {
+                  const renderStaffRow = (staff) => (
+                    <tr key={staff.staff_id}>
+                      <td className="sticky left-0 z-[5] bg-gray-900 px-2 py-1 border-b border-r border-gray-700 font-semibold text-[11px] whitespace-nowrap">
+                        <div>{staff.name}</div>
+                        <div className="text-[9px] text-gray-500">{staff.department || ''}</div>
+                      </td>
+                      {days.map((d) => {
+                        const dayData = (staff.days || []).find((day) => (day.date || '').substring(0, 10) === d.dateStr);
+                        const st = dayData?.status || null;
+                        const shift = dayData?.shift || null;
+                        const isManual = dayData?.is_manual_override;
+                        const isEmpty = !dayData;
+                        const isToday = d.dateStr === today;
+                        let cellColor = '';
+                        let cellText = '';
+                        if (!isEmpty) {
+                          if (st === 'work') {
+                            cellColor = cellColorMap[`work-${shift}`] || '';
+                            cellText = cellLabelMap[shift] || '';
+                          } else if (st === 'off') { cellColor = cellColorMap['off']; cellText = 'OFF'; }
+                          else if (st === 'sick') { cellColor = cellColorMap['sick']; cellText = 'S'; }
+                          else if (st === 'leave') { cellColor = cellColorMap['leave']; cellText = 'L'; }
                         }
-                      }
+                        return (
+                          <td
+                            key={d.num}
+                            onClick={() => { setEditCell({ id: dayData?.id || null, staff_id: staff.staff_id, staff_name: staff.name, date: d.dateStr, status: st, shift }); setEditForm({ status: st || 'work', shift: shift || 'morning', is_manual_override: true }); }}
+                            className={`p-0 border-b border-gray-700 cursor-pointer relative transition-colors duration-150 hover:brightness-125 ${isToday ? 'ring-1 ring-inset ring-emerald-500/40' : ''} ${cellColor} ${isManual ? 'border-l-2 border-l-yellow-400' : ''}`}
+                            title={`${staff.name} — ${d.dateStr}: ${st || 'empty'} ${shift || ''}`}
+                          >
+                            <div className="w-9 h-9 flex items-center justify-center">
+                              {isEmpty ? <span className="text-gray-500 text-sm opacity-30">+</span>
+                              : <span className="font-bold text-[11px]">{cellText}</span>}
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
 
-                      return (
-                        <td
-                          key={d.num}
-                          onClick={() => { setEditCell({ id: dayData?.id || null, staff_id: staff.staff_id, staff_name: staff.name, date: d.dateStr, status: st, shift }); setEditForm({ status: st || 'work', shift: shift || 'morning', is_manual_override: true }); }}
-                          className={`p-0 border-b border-gray-700 cursor-pointer relative transition-colors duration-150 hover:brightness-125 ${isToday ? 'ring-1 ring-inset ring-emerald-500/40' : ''} ${cellColor} ${isManual ? 'border-l-2 border-l-yellow-400' : ''}`}
-                          title={`${staff.name} — ${d.dateStr}: ${st || 'empty'} ${shift || ''}`}
-                        >
-                          <div className="w-9 h-9 flex items-center justify-center">
-                            {isEmpty ? <span className="text-gray-500 text-sm opacity-30">+</span>
-                            : <span className="font-bold text-[11px]">{cellText}</span>}
+                  // Group staff by department
+                  const groups = {};
+                  staffList.forEach((s) => {
+                    const dept = s.department || '(Tanpa Department)';
+                    if (!groups[dept]) groups[dept] = [];
+                    groups[dept].push(s);
+                  });
+                  const sortedDepts = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+                  const rows = [];
+                  sortedDepts.forEach((dept) => {
+                    rows.push(
+                      <tr key={`dept-${dept}`}>
+                        <td colSpan={daysInMonth + 1} className="sticky left-0 z-[6] bg-gray-800/80 border-b border-t border-gray-700 px-2.5 py-1.5">
+                          <div className="flex items-center gap-2">
+                            <div className="w-1 h-3.5 bg-emerald-400 rounded-sm" />
+                            <span className="text-[11px] font-bold text-gray-200 uppercase tracking-wider">{dept}</span>
+                            <span className="text-[10px] text-gray-500 font-mono">({groups[dept].length})</span>
                           </div>
                         </td>
-                      );
-                    })}
-                  </tr>
-                ))}
+                      </tr>
+                    );
+                    groups[dept].forEach((staff) => {
+                      rows.push(renderStaffRow(staff));
+                    });
+                  });
+                  return rows;
+                })()}
               </tbody>
             </table>
           </Card>
