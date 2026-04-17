@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { db, getSetting, setSetting, getDefaultTenantId, getTenantSetting, setTenantSetting } from './db.js';
-import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, pushBreakQRToMonitor } from './bot.js';
+import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor } from './bot.js';
 import { liveBus, emitLiveUpdate } from './events.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -866,6 +866,7 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
 app.post('/api/bot/clock-in', tgAuth, (req, res) => {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_in', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Clock-In.`);
   }
   const today = todayPP();
@@ -891,6 +892,11 @@ app.post('/api/bot/clock-in', tgAuth, (req, res) => {
 });
 
 app.post('/api/bot/clock-out', tgAuth, (req, res) => {
+  const clientIp = getClientIp(req);
+  if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_out', clientIp).catch(() => {});
+    return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Clock-Out.`);
+  }
   const today = todayPP();
   const att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
   if (!att) return fail(res, 400, 'Belum clock-in.');
@@ -958,6 +964,7 @@ app.post('/api/bot/break-request-qr', tgAuth, async (req, res) => {
 app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'break_end', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Back to Work.`);
   }
   const { break_id, qr_token } = req.body || {};
@@ -986,6 +993,7 @@ app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
 app.post('/api/bot/break-end', tgAuth, (req, res) => {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'break_end', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Back to Work.`);
   }
   const today = todayPP();

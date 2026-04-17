@@ -302,6 +302,20 @@ export async function notifyLate(tenantId, staff, lateMin, shift) {
   await notifyMonitor(tenantId, `⚠️ *TELAT* — ${staff.name}${dept}\n⏱ ${lateMin} menit · shift _${shift}_`);
 }
 
+export async function notifyIpViolation(tenantId, staff, action, ip) {
+  const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
+  if (muted.includes('outside_ip_attempt')) return;
+  const dept = staff.department ? ` · ${staff.department}` : '';
+  const actions = { clock_in: 'START (Clock In)', clock_out: 'END (Clock Out)', break_end: 'Back to Work' };
+  const actionLabel = actions[action] || action;
+  await notifyMonitor(
+    tenantId,
+    `🚨 *IP VIOLATION* — ${staff.name}${dept}\n` +
+    `Mencoba *${actionLabel}* dari IP di luar kantor\n` +
+    `IP: \`${ip}\``
+  );
+}
+
 export async function notifyOvertime(tenantId, staff, breakType, durationMin, limitMin) {
   const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
   if (muted.includes('break_overtime')) return;

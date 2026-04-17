@@ -188,7 +188,9 @@ export default function MiniApp() {
             {mkBtn('toilet', '🚻 Toilet')}
             {mkBtn('outside', '🏪 Go Out')}
             <div style={{fontSize:11,color:'#6b7280',marginBottom:6,marginTop:14}}>END</div>
-            <Btn color="red" onClick={() => act('/clock-out')}>⏹ END (Clock Out)</Btn>
+            <Btn color="red" onClick={() => act('/clock-out')} disabled={me?.ip_allowed === false}>
+              ⏹ END (Clock Out){me?.ip_allowed === false ? ' · Butuh IP Kantor' : ''}
+            </Btn>
           </>
         );
       })()}
