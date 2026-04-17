@@ -205,7 +205,7 @@ app.get('/api/activity/live', auth, (req, res) => {
   const today = todayPP();
   const sc = scopeTenant(req, 's.tenant_id');
   const staff = db.prepare(`
-    SELECT s.id, s.name, s.department, s.category, s.current_shift,
+    SELECT s.id, s.tenant_id, s.name, s.department, s.category, s.current_shift,
            a.clock_in, a.clock_out, a.late_minutes, a.current_status,
            a.break_start, a.break_limit,
            sd.status AS schedule_status
@@ -215,6 +215,31 @@ app.get('/api/activity/live', auth, (req, res) => {
     WHERE s.is_active = 1${sc.clause}
     ORDER BY s.name
   `).all(today, today, ...sc.params);
+
+  // Break quota usage per staff per type hari ini
+  const bsc = scopeTenant(req, 's2.tenant_id');
+  const usage = db.prepare(`
+    SELECT bl.staff_id, bl.type, COALESCE(SUM(bl.duration_minutes),0) AS used
+    FROM break_log bl JOIN staff s2 ON s2.id = bl.staff_id
+    WHERE DATE(bl.start_time) = ? AND bl.end_time IS NOT NULL${bsc.clause}
+    GROUP BY bl.staff_id, bl.type
+  `).all(today, ...bsc.params);
+  const usageMap = {};
+  usage.forEach((u) => { (usageMap[u.staff_id] = usageMap[u.staff_id] || {})[u.type] = u.used; });
+
+  const limits = db.prepare('SELECT tenant_id, type, daily_quota_minutes FROM break_settings').all();
+  const limitMap = {};
+  limits.forEach((l) => { limitMap[`${l.tenant_id}_${l.type}`] = l.daily_quota_minutes; });
+
+  const BREAK_TYPES = ['smoke', 'toilet', 'outside'];
+  staff.forEach((s) => {
+    s.break_quotas = {};
+    BREAK_TYPES.forEach((t) => {
+      const limit = limitMap[`${s.tenant_id}_${t}`] || 15;
+      const used = (usageMap[s.id] || {})[t] || 0;
+      s.break_quotas[t] = { limit, used, remaining: Math.max(0, limit - used) };
+    });
+  });
 
   const breaks = db.prepare(`
     SELECT bl.id, s.name, bl.type, bl.start_time, bl.limit_minutes

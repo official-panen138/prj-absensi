@@ -208,6 +208,22 @@ export default function LiveBoardPage({ token }) {
                               {isOnline && <>▶ {fmtTime(staff.clock_in)}{staff.late_minutes > 0 && <span className="text-red-400"> +{staff.late_minutes}m</span>}</>}
                             </div>
                           </div>
+                          {staff.break_quotas && (
+                            <div className="flex gap-2 mt-1.5 text-[10px] font-mono">
+                              {['smoke', 'toilet', 'outside'].map((t) => {
+                                const q = staff.break_quotas[t];
+                                if (!q) return null;
+                                const icons = { smoke: '🚬', toilet: '🚻', outside: '🏪' };
+                                const exhausted = q.remaining <= 0;
+                                const warn = q.used >= q.limit * 0.8;
+                                return (
+                                  <span key={t} className={exhausted ? 'text-red-400 font-bold' : warn ? 'text-amber-400' : 'text-gray-500'}>
+                                    {icons[t]} {q.used}/{q.limit}m
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
                           {isOnline && (
                             <button
                               onClick={() => forceClockOut(staff)}
