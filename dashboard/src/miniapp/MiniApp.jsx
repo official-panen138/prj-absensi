@@ -155,16 +155,29 @@ export default function MiniApp() {
 
       {notStarted && <Btn onClick={() => act('/clock-in')}>▶ START (Clock In)</Btn>}
 
-      {isWorking && (
-        <>
-          <div style={{fontSize:11,color:'#6b7280',marginBottom:6,marginTop:8}}>BREAK</div>
-          <Btn color="amber" onClick={() => act('/break-start', { type: 'smoke' })}>🚬 Smoke Break</Btn>
-          <Btn color="amber" onClick={() => act('/break-start', { type: 'toilet' })}>🚻 Toilet</Btn>
-          <Btn color="amber" onClick={() => act('/break-start', { type: 'outside' })}>🏪 Go Out</Btn>
-          <div style={{fontSize:11,color:'#6b7280',marginBottom:6,marginTop:14}}>END</div>
-          <Btn color="red" onClick={() => act('/clock-out')}>⏹ END (Clock Out)</Btn>
-        </>
-      )}
+      {isWorking && (() => {
+        const q = me?.break_quotas || {};
+        const mkBtn = (type, label) => {
+          const quota = q[type];
+          const exhausted = quota && quota.remaining <= 0;
+          const suffix = quota ? ` · ${quota.used}m/${quota.limit}m` : '';
+          return (
+            <Btn color="amber" onClick={() => act('/break-start', { type })} disabled={exhausted}>
+              {label}{suffix}{exhausted ? ' · HABIS' : ''}
+            </Btn>
+          );
+        };
+        return (
+          <>
+            <div style={{fontSize:11,color:'#6b7280',marginBottom:6,marginTop:8}}>BREAK</div>
+            {mkBtn('smoke', '🚬 Smoke Break')}
+            {mkBtn('toilet', '🚻 Toilet')}
+            {mkBtn('outside', '🏪 Go Out')}
+            <div style={{fontSize:11,color:'#6b7280',marginBottom:6,marginTop:14}}>END</div>
+            <Btn color="red" onClick={() => act('/clock-out')}>⏹ END (Clock Out)</Btn>
+          </>
+        );
+      })()}
 
       {onBreak && (() => {
         const elapsedSec = att.break_start ? Math.max(0, Math.floor((now - new Date(att.break_start).getTime()) / 1000)) : 0;

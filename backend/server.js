@@ -747,7 +747,33 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
   const today = todayPP();
   const att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
   const sched = db.prepare('SELECT status, shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
-  res.json({ success: true, staff: { id: req.staff.id, name: req.staff.name, department: req.staff.department, current_shift: req.staff.current_shift }, attendance: att || null, schedule: sched || null });
+
+  // Break quota usage hari ini per type
+  const quotas = db.prepare('SELECT type, daily_quota_minutes FROM break_settings WHERE tenant_id = ?').all(req.staff.tenant_id);
+  const used = db.prepare(`
+    SELECT type, COALESCE(SUM(duration_minutes), 0) AS used
+    FROM break_log
+    WHERE staff_id = ? AND DATE(start_time) = ? AND end_time IS NOT NULL
+    GROUP BY type
+  `).all(req.staff.id, today);
+  const usedMap = {};
+  used.forEach((r) => { usedMap[r.type] = r.used || 0; });
+  const breakQuotas = {};
+  quotas.forEach((q) => {
+    breakQuotas[q.type] = {
+      limit: q.daily_quota_minutes,
+      used: usedMap[q.type] || 0,
+      remaining: Math.max(0, q.daily_quota_minutes - (usedMap[q.type] || 0)),
+    };
+  });
+
+  res.json({
+    success: true,
+    staff: { id: req.staff.id, name: req.staff.name, department: req.staff.department, current_shift: req.staff.current_shift },
+    attendance: att || null,
+    schedule: sched || null,
+    break_quotas: breakQuotas,
+  });
 });
 
 app.post('/api/bot/clock-in', tgAuth, (req, res) => {
@@ -797,6 +823,19 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
   if (att.current_status !== 'working') return fail(res, 400, 'Sedang break, end dulu.');
   const bs = db.prepare('SELECT daily_quota_minutes FROM break_settings WHERE tenant_id = ? AND type = ?').get(req.staff.tenant_id, type);
   const limit = bs?.daily_quota_minutes || 15;
+
+  // Cek kuota harian: total durasi break type ini hari ini tidak boleh melebihi daily_quota
+  const used = db.prepare(`
+    SELECT COALESCE(SUM(duration_minutes), 0) AS used
+    FROM break_log
+    WHERE staff_id = ? AND type = ? AND DATE(start_time) = ? AND end_time IS NOT NULL
+  `).get(req.staff.id, type, today).used || 0;
+
+  if (used >= limit) {
+    const labels = { smoke: 'Smoke', toilet: 'Toilet', outside: 'Go Out' };
+    return fail(res, 400, `Kuota ${labels[type] || type} habis hari ini (${used}m/${limit}m).`);
+  }
+
   const now = new Date();
   // Buat break log tanpa QR — QR baru di-generate saat user klik "Back to Work"
   const r = db.prepare('INSERT INTO break_log(tenant_id,attendance_id,staff_id,type,start_time,limit_minutes) VALUES(?,?,?,?,?,?)')
