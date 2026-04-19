@@ -262,11 +262,16 @@ app.get('/api/activity/live', auth, (req, res) => {
   });
 
   // Break quota usage per staff per type hari ini
+  // Include break aktif (end_time IS NULL) — pakai elapsed sejak start_time
   const bsc = scopeTenant(req, 's2.tenant_id');
   const usage = db.prepare(`
-    SELECT bl.staff_id, bl.type, COALESCE(SUM(bl.duration_minutes),0) AS used
+    SELECT bl.staff_id, bl.type, COALESCE(SUM(
+      CASE WHEN bl.end_time IS NOT NULL THEN bl.duration_minutes
+      ELSE CAST((julianday('now') - julianday(bl.start_time)) * 1440 AS INTEGER)
+      END
+    ),0) AS used
     FROM break_log bl JOIN staff s2 ON s2.id = bl.staff_id
-    WHERE DATE(bl.start_time) = ? AND bl.end_time IS NOT NULL${bsc.clause}
+    WHERE DATE(bl.start_time) = ?${bsc.clause}
     GROUP BY bl.staff_id, bl.type
   `).all(today, ...bsc.params);
   const usageMap = {};
@@ -853,12 +858,16 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
   const att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
   const sched = db.prepare('SELECT status, shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
 
-  // Break quota usage hari ini per type
+  // Break quota usage hari ini per type (include break aktif sebagai elapsed)
   const quotas = db.prepare('SELECT type, daily_quota_minutes FROM break_settings WHERE tenant_id = ?').all(req.staff.tenant_id);
   const used = db.prepare(`
-    SELECT type, COALESCE(SUM(duration_minutes), 0) AS used
+    SELECT type, COALESCE(SUM(
+      CASE WHEN end_time IS NOT NULL THEN duration_minutes
+      ELSE CAST((julianday('now') - julianday(start_time)) * 1440 AS INTEGER)
+      END
+    ), 0) AS used
     FROM break_log
-    WHERE staff_id = ? AND DATE(start_time) = ? AND end_time IS NOT NULL
+    WHERE staff_id = ? AND DATE(start_time) = ?
     GROUP BY type
   `).all(req.staff.id, today);
   const usedMap = {};
@@ -972,7 +981,7 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
   if (!att) return fail(res, 400, 'Belum clock-in.');
   if (att.current_status !== 'working') return fail(res, 400, 'Sedang break, end dulu.');
   const bs = db.prepare('SELECT daily_quota_minutes FROM break_settings WHERE tenant_id = ? AND type = ?').get(req.staff.tenant_id, type);
-  const limit = bs?.daily_quota_minutes || 15;
+  const dailyQuota = bs?.daily_quota_minutes || 15;
 
   // Cek kuota harian: total durasi break type ini hari ini tidak boleh melebihi daily_quota
   const used = db.prepare(`
@@ -981,21 +990,25 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
     WHERE staff_id = ? AND type = ? AND DATE(start_time) = ? AND end_time IS NOT NULL
   `).get(req.staff.id, type, today).used || 0;
 
-  if (used >= limit) {
+  if (used >= dailyQuota) {
     const labels = { smoke: 'Smoke', toilet: 'Toilet', outside: 'Go Out' };
-    return fail(res, 400, `Kuota ${labels[type] || type} habis hari ini (${used}m/${limit}m).`);
+    return fail(res, 400, `Kuota ${labels[type] || type} habis hari ini (${used}m/${dailyQuota}m).`);
   }
 
+  // Sisa kuota untuk break ini = daily_quota - sudah dipakai
+  const remainingQuota = Math.max(1, dailyQuota - used);
+
   const now = new Date();
-  const ipStart = String(req.ip || req.headers['x-forwarded-for'] || '').slice(0, 45);
-  // Buat break log tanpa QR — QR baru di-generate saat user klik "Back to Work"
+  const ipStart = clientIp.slice(0, 45);
+  // limit_minutes di break_log = sisa kuota harian (bukan kuota penuh) supaya
+  // SISA WAKTU di Mini App dan progress bar reflect remaining daily quota
   const r = db.prepare('INSERT INTO break_log(tenant_id,attendance_id,staff_id,type,start_time,limit_minutes,ip_address_start) VALUES(?,?,?,?,?,?,?)')
-    .run(req.staff.tenant_id, att.id, req.staff.id, type, now.toISOString(), limit, ipStart);
+    .run(req.staff.tenant_id, att.id, req.staff.id, type, now.toISOString(), remainingQuota, ipStart);
   const statusMap = { smoke: 'smoking', toilet: 'toilet', outside: 'outside' };
   db.prepare('UPDATE attendance SET current_status = ?, break_start = ?, break_type = ?, break_limit = ? WHERE id = ?')
-    .run(statusMap[type], now.toISOString(), type, limit, att.id);
+    .run(statusMap[type], now.toISOString(), type, remainingQuota, att.id);
   emitLiveUpdate(req.staff.tenant_id, 'break_start', { staff_id: req.staff.id, type });
-  ok(res, { break_id: r.lastInsertRowid, limit_minutes: limit });
+  ok(res, { break_id: r.lastInsertRowid, limit_minutes: remainingQuota, daily_quota: dailyQuota, used_before: used });
 });
 
 app.post('/api/bot/break-request-qr', tgAuth, async (req, res) => {
