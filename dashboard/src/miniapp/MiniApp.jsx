@@ -113,22 +113,36 @@ export default function MiniApp() {
     finally { setBusy(false); }
   };
 
-  const scanQrForAction = (label, actPath) => {
+  // 2-step: request QR (server push ke grup) → buka scanner
+  const requestThenScan = async (requestPath, scanLabel, finalPath) => {
     const tg = window.Telegram?.WebApp;
     if (!tg?.showScanQrPopup) {
       setErr('QR scanner tidak didukung di versi Telegram ini. Update Telegram app.');
       return;
     }
     setErr(''); setInfo('');
-    tg.showScanQrPopup({ text: label }, (text) => {
-      if (!text) return false;
-      tg.closeScanQrPopup();
-      act(actPath, { qr_token: text });
-      return true;
-    });
+    setBusy(true);
+    try {
+      await api(requestPath, token, { method: 'POST' });
+      setInfo('✓ QR dikirim ke grup monitor. Buka kamera untuk scan.');
+    } catch (e) {
+      setErr(e.message);
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+    setTimeout(() => {
+      tg.showScanQrPopup({ text: scanLabel }, (text) => {
+        if (!text) return false;
+        tg.closeScanQrPopup();
+        const tokenOnly = String(text).replace(/^WMS-/, '');
+        act(finalPath, { qr_token: tokenOnly });
+        return true;
+      });
+    }, 800);
   };
-  const scanAndClockIn = () => scanQrForAction('Scan QR Workstation untuk START', '/clock-in-qr');
-  const scanAndClockOut = () => scanQrForAction('Scan QR Workstation untuk END', '/clock-out-qr');
+  const scanAndClockIn = () => requestThenScan('/clock-in-request-qr', 'Scan QR START dari grup monitor', '/clock-in-qr');
+  const scanAndClockOut = () => requestThenScan('/clock-out-request-qr', 'Scan QR PULANG dari grup monitor', '/clock-out-qr');
 
   const scanQrAndEnd = async () => {
     const tg = window.Telegram?.WebApp;

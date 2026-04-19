@@ -183,6 +183,7 @@ function migrateV2_MultiTenant() {
   }
 
   // workstations: tambah qr_token_in (Start Kerja) dan qr_token_out (Pulang Kerja)
+  // (legacy — sekarang clock-in/out pakai dynamic QR via qr_sessions)
   if (!hasColumn('workstations', 'qr_token_in')) {
     db.exec('ALTER TABLE workstations ADD COLUMN qr_token_in TEXT');
     db.exec('UPDATE workstations SET qr_token_in = qr_token WHERE qr_token_in IS NULL');
@@ -193,6 +194,23 @@ function migrateV2_MultiTenant() {
     db.exec('UPDATE workstations SET qr_token_out = qr_token WHERE qr_token_out IS NULL');
     console.log('[db] added qr_token_out to workstations + backfill from qr_token');
   }
+
+  // qr_sessions: dynamic QR untuk clock-in/clock-out (generate per request, expire 5 menit)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS qr_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL,
+      staff_id INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      qr_token TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_qrs_token ON qr_sessions(qr_token);
+    CREATE INDEX IF NOT EXISTS idx_qrs_staff ON qr_sessions(staff_id, action, used_at);
+  `);
 
   // Backfill: all existing rows (except super_admin users) get assigned to PanenGroup
   for (const t of ['staff', 'schedules', 'schedule_daily', 'attendance', 'break_log', 'swap_requests', 'workstations']) {

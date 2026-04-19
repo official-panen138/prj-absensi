@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { db, getSetting, setSetting, getDefaultTenantId, getTenantSetting, setTenantSetting } from './db.js';
-import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor } from './bot.js';
+import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor } from './bot.js';
 import { liveBus, emitLiveUpdate } from './events.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -913,25 +913,63 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
   });
 });
 
-// Helper: cari workstation matching ANY token, return matched purpose
-function findWorkstationByAnyToken(tenantId, qrToken) {
-  if (!qrToken) return null;
-  const clean = String(qrToken).startsWith('WMS-') ? String(qrToken).slice(4) : String(qrToken);
-  const ws = db.prepare(`
-    SELECT *,
-      CASE
-        WHEN qr_token_in = ? THEN 'in'
-        WHEN qr_token_out = ? THEN 'out'
-        WHEN qr_token = ? THEN 'work'
-        ELSE NULL
-      END AS matched
-    FROM workstations
-    WHERE tenant_id = ? AND is_active = 1
-      AND (qr_token_in = ? OR qr_token_out = ? OR qr_token = ?)
-    LIMIT 1
-  `).get(clean, clean, clean, tenantId, clean, clean, clean);
-  return ws;
+// Helper: validate dynamic QR session
+function consumeQrSession(tenantId, staffId, action, qrToken) {
+  if (!qrToken) return { error: 'QR token kosong' };
+  const clean = String(qrToken).replace(/^WMS-/, '');
+  const session = db.prepare(`
+    SELECT * FROM qr_sessions
+    WHERE qr_token = ? AND tenant_id = ? AND action = ? AND used_at IS NULL
+  `).get(clean, tenantId, action);
+  if (!session) return { error: 'QR tidak valid. Klik tombol untuk request QR baru.' };
+  if (session.staff_id !== staffId) return { error: 'QR ini bukan untuk Anda. Request QR Anda sendiri.' };
+  if (new Date(session.expires_at) < new Date()) return { error: 'QR sudah expired (5 menit). Klik tombol lagi untuk QR baru.' };
+  db.prepare('UPDATE qr_sessions SET used_at = ? WHERE id = ?').run(new Date().toISOString(), session.id);
+  return { session };
 }
+
+// Generate fresh QR + push ke monitor group
+async function createClockQrSession(tenantId, staff, action) {
+  const qrToken = crypto.randomBytes(8).toString('hex');
+  const expiresAt = new Date(Date.now() + 5 * 60000).toISOString();
+  const r = db.prepare('INSERT INTO qr_sessions(tenant_id,staff_id,action,qr_token,expires_at) VALUES(?,?,?,?,?)')
+    .run(tenantId, staff.id, action, qrToken, expiresAt);
+  return { id: r.lastInsertRowid, qr_token: qrToken, expires_at: expiresAt };
+}
+
+app.post('/api/bot/clock-in-request-qr', tgAuth, async (req, res) => {
+  const clientIp = getClientIp(req);
+  if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_in', clientIp).catch(() => {});
+    return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor untuk Start Kerja.`);
+  }
+  // Pre-validate prerequisites
+  const today = todayPP();
+  const existing = db.prepare('SELECT id FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
+  if (existing) return fail(res, 400, 'Sudah clock-in hari ini.');
+  const sched = db.prepare('SELECT status FROM schedule_daily WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
+  if (sched && ['off', 'sick', 'leave'].includes(sched.status)) {
+    return fail(res, 400, `Jadwal hari ini: ${sched.status.toUpperCase()}. Tidak bisa clock-in.`);
+  }
+  const session = await createClockQrSession(req.staff.tenant_id, req.staff, 'clock_in');
+  pushClockQRToMonitor(req.staff.tenant_id, { ...session, action: 'clock_in' }, req.staff).catch((e) => console.warn('[bot] push QR failed:', e.message));
+  ok(res, session);
+});
+
+app.post('/api/bot/clock-out-request-qr', tgAuth, async (req, res) => {
+  const clientIp = getClientIp(req);
+  if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_out', clientIp).catch(() => {});
+    return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor untuk Pulang Kerja.`);
+  }
+  const today = todayPP();
+  const att = db.prepare('SELECT clock_out FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
+  if (!att) return fail(res, 400, 'Belum clock-in hari ini.');
+  if (att.clock_out) return fail(res, 400, 'Sudah clock-out.');
+  const session = await createClockQrSession(req.staff.tenant_id, req.staff, 'clock_out');
+  pushClockQRToMonitor(req.staff.tenant_id, { ...session, action: 'clock_out' }, req.staff).catch((e) => console.warn('[bot] push QR failed:', e.message));
+  ok(res, session);
+});
 
 app.post('/api/bot/clock-in-qr', tgAuth, (req, res) => {
   const clientIp = getClientIp(req);
@@ -939,10 +977,8 @@ app.post('/api/bot/clock-in-qr', tgAuth, (req, res) => {
     notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_in', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Clock-In.`);
   }
-  const { qr_token } = req.body || {};
-  const ws = findWorkstationByAnyToken(req.staff.tenant_id, qr_token);
-  if (!ws) return fail(res, 400, 'QR Workstation tidak valid atau sudah nonaktif. Scan QR yang ada di kantor.');
-  if (ws.matched === 'out') return fail(res, 400, 'QR ini untuk *PULANG KERJA*, bukan untuk Start. Cari QR yang berlabel "Start Kerja".');
+  const r = consumeQrSession(req.staff.tenant_id, req.staff.id, 'clock_in', req.body?.qr_token);
+  if (r.error) return fail(res, 400, r.error);
   return clockInImpl(req, res);
 });
 
@@ -952,10 +988,8 @@ app.post('/api/bot/clock-out-qr', tgAuth, (req, res) => {
     notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_out', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Clock-Out.`);
   }
-  const { qr_token } = req.body || {};
-  const ws = findWorkstationByAnyToken(req.staff.tenant_id, qr_token);
-  if (!ws) return fail(res, 400, 'QR Workstation tidak valid atau sudah nonaktif. Scan QR yang ada di kantor.');
-  if (ws.matched === 'in') return fail(res, 400, 'QR ini untuk *START KERJA*, bukan untuk Pulang. Cari QR yang berlabel "Pulang Kerja".');
+  const r = consumeQrSession(req.staff.tenant_id, req.staff.id, 'clock_out', req.body?.qr_token);
+  if (r.error) return fail(res, 400, r.error);
   return clockOutImpl(req, res);
 });
 

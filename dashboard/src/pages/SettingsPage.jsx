@@ -390,10 +390,8 @@ export default function SettingsPage({ token, user }) {
                     </div>
                   )}
                 </div>
-                <div className="flex flex-wrap gap-3 p-3 justify-around">
-                  <QrPreview token={ws.qr_token_in || ws.qr_token} label="📥 START KERJA" color="#34d399" />
-                  <QrPreview token={ws.qr_token_out || ws.qr_token} label="📤 PULANG KERJA" color="#f87171" />
-                  <QrPreview token={ws.qr_token} label="🔄 BACK TO WORK" color="#fbbf24" />
+                <div className="px-3 py-2 text-[11px] text-gray-500">
+                  📥 START · 📤 PULANG · 🔄 BACK TO WORK — semua QR sekarang <strong>dinamis</strong> (push ke grup monitor saat staff klik tombol di Mini App, expire 5 menit, sekali pakai). Tidak perlu cetak QR statis.
                 </div>
               </div>
             ))}

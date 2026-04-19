@@ -270,6 +270,23 @@ export async function notifyApproved(tenantId, telegramId, name) {
   } catch (e) { console.warn('[bot] notifyApproved failed:', e.message); }
 }
 
+export async function pushClockQRToMonitor(tenantId, qrSession, staff) {
+  const entry = runningBots.get(tenantId);
+  if (!entry) return;
+  const { monitorGroupId } = readTenantConfig(tenantId);
+  if (!monitorGroupId) return;
+  // QR text = WMS-<token> (Mini App scanner akan strip prefix WMS- dan kirim token saja)
+  const qrText = `WMS-${qrSession.qr_token}`;
+  const png = await QRCode.toBuffer(qrText, { width: 320, margin: 2 });
+  const isStart = qrSession.action === 'clock_in';
+  const label = isStart ? '📥 *START KERJA*' : '📤 *PULANG KERJA*';
+  const dept = staff.department ? ` — ${staff.department}` : '';
+  const caption = `${label}\n👤 *${staff.name}*${dept}\n⏰ Berlaku 5 menit · sekali pakai`;
+  try {
+    await entry.bot.api.sendPhoto(monitorGroupId, new InputFile(png, `clock-${qrSession.id}.png`), { caption, parse_mode: 'Markdown' });
+  } catch (e) { console.warn('[bot] pushClockQRToMonitor failed:', e.message); }
+}
+
 export async function pushBreakQRToMonitor(tenantId, breakLog, staff) {
   const entry = runningBots.get(tenantId);
   if (!entry) return;
