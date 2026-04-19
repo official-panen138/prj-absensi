@@ -618,25 +618,25 @@ export async function notifySwapRequest(tenantId, requester, partner, targetDate
   const kb = new InlineKeyboard()
     .text('✅ Approve', `swap_approve_${swapId}`)
     .text('❌ Reject', `swap_reject_${swapId}`);
+  // Render snapshot BEFORE dulu, baru kirim notif dengan tombol di bawahnya
+  // (admin scroll ke bawah untuk lihat tombol — snapshot di atas sebagai konteks)
+  const deptName = requester.department || 'Schedule';
+  try {
+    if (swapType === 'sick') {
+      const pair = await renderSickPair(requester.department_id, requester.id, targetDate, deptName);
+      if (pair?.before) await entry.bot.api.sendPhoto(chatId, new InputFile(pair.before, 'before.png'), { caption: '📋 *Jadwal saat ini* (kondisi sekarang)', parse_mode: 'Markdown' });
+    } else if (swapType === 'move_off') {
+      const pair = await renderMoveOffPair(requester.department_id, requester.id, targetDate, partnerDate, requester.current_shift, deptName);
+      if (pair?.before) await entry.bot.api.sendPhoto(chatId, new InputFile(pair.before, 'before.png'), { caption: '📋 *Jadwal saat ini* (kondisi sekarang)', parse_mode: 'Markdown' });
+      if (pair?.beforeWk2) await entry.bot.api.sendPhoto(chatId, new InputFile(pair.beforeWk2, 'before2.png'), { caption: '📋 *Jadwal saat ini* (bulan kedua)', parse_mode: 'Markdown' });
+    } else if (swapType === 'trade' && partner) {
+      const pair = await renderTradePair(requester.department_id, requester.id, partner.id, targetDate, partnerDate || targetDate, deptName);
+      if (pair?.before) await entry.bot.api.sendPhoto(chatId, new InputFile(pair.before, 'before.png'), { caption: '📋 *Jadwal saat ini* (kondisi sekarang)', parse_mode: 'Markdown' });
+    }
+  } catch (e) { console.warn('[bot] render BEFORE snapshot:', e.message); }
   try {
     await entry.bot.api.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: kb });
-
-    // Snapshot BEFORE (kondisi sekarang) — preview untuk admin sebelum approve
-    const deptName = requester.department || 'Schedule';
-    try {
-      if (swapType === 'sick') {
-        const pair = await renderSickPair(requester.department_id, requester.id, targetDate, deptName);
-        if (pair?.before) await entry.bot.api.sendPhoto(chatId, new InputFile(pair.before, 'before.png'), { caption: '📋 *Jadwal saat ini* (kondisi sekarang)', parse_mode: 'Markdown' });
-      } else if (swapType === 'move_off') {
-        const pair = await renderMoveOffPair(requester.department_id, requester.id, targetDate, partnerDate, requester.current_shift, deptName);
-        if (pair?.before) await entry.bot.api.sendPhoto(chatId, new InputFile(pair.before, 'before.png'), { caption: '📋 *Jadwal saat ini* (kondisi sekarang)', parse_mode: 'Markdown' });
-        if (pair?.beforeWk2) await entry.bot.api.sendPhoto(chatId, new InputFile(pair.beforeWk2, 'before2.png'), { caption: '📋 *Jadwal saat ini* (bulan kedua)', parse_mode: 'Markdown' });
-      } else if (swapType === 'trade' && partner) {
-        const pair = await renderTradePair(requester.department_id, requester.id, partner.id, targetDate, partnerDate || targetDate, deptName);
-        if (pair?.before) await entry.bot.api.sendPhoto(chatId, new InputFile(pair.before, 'before.png'), { caption: '📋 *Jadwal saat ini* (kondisi sekarang)', parse_mode: 'Markdown' });
-      }
-    } catch (e) { console.warn('[bot] render BEFORE snapshot:', e.message); }
-  } catch (e) { console.warn('[bot] notifySwapRequest failed:', e.message); }
+  } catch (e) { console.warn('[bot] notifySwapRequest send notif failed:', e.message); }
 }
 
 // Dipanggil SETELAH swap di-approve. Render snapshot dari DB state sekarang
