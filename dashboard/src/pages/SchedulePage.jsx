@@ -148,7 +148,8 @@ export default function SchedulePage({ token, user }) {
   };
 
   const openDayView = (dateStr) => {
-    const staffList = schedule?.staff_schedules || [];
+    const all = schedule?.staff_schedules || [];
+    const staffList = deptFilter ? all.filter((s) => s.department === deptFilter) : all;
     const entries = [];
     staffList.forEach((s) => {
       const dayData = (s.days || []).find((d) => (d.date || '').substring(0, 10) === dateStr);
@@ -225,7 +226,9 @@ export default function SchedulePage({ token, user }) {
   const today = todayISO();
   const schedStatus = schedule?.status;
 
-  const staffList = schedule?.staff_schedules || [];
+  const allStaff = schedule?.staff_schedules || [];
+  // Filter display by department kalau deptFilter aktif
+  const staffList = deptFilter ? allStaff.filter((s) => s.department === deptFilter) : allStaff;
   let statWork = 0, statOff = 0, statSick = 0, statLeave = 0;
   staffList.forEach((s) => (s.days || []).forEach((d) => { const st = d.status || 'work'; if (st === 'work') statWork++; else if (st === 'off') statOff++; else if (st === 'sick') statSick++; else if (st === 'leave') statLeave++; }));
 
