@@ -641,10 +641,10 @@ app.get('/api/swap/history', auth, (req, res) => {
   const sc = scopeTenant(req, 'sw.tenant_id');
   ok(res, db.prepare(swapJoinBase + ' WHERE 1=1' + sc.clause + ' ORDER BY sw.created_at DESC').all(...sc.params));
 });
-// Helper: apply swap approval — update schedule_daily otomatis
+// Helper: apply swap approval — update schedule_daily otomatis berdasarkan swap_type
 function applySwapApproval(sw) {
-  if (sw.target_staff_id) {
-    // Trade: tukar shift di kedua tanggal
+  const type = sw.swap_type || (sw.target_staff_id ? 'trade' : 'sick');
+  if (type === 'trade') {
     const partnerDate = sw.partner_date || sw.target_date;
     const reqSched = db.prepare('SELECT shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.requester_id, sw.target_date);
     const partnerSched = db.prepare('SELECT shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.target_staff_id, partnerDate);
@@ -653,10 +653,22 @@ function applySwapApproval(sw) {
       db.prepare('UPDATE schedule_daily SET shift = ?, is_manual_override = 1 WHERE staff_id = ? AND date = ?').run(partnerSched.shift, sw.requester_id, sw.target_date);
       db.prepare('UPDATE schedule_daily SET shift = ?, is_manual_override = 1 WHERE staff_id = ? AND date = ?').run(reqSched.shift, sw.target_staff_id, partnerDate);
     })();
-  } else {
-    // Type off: set schedule_daily.status = 'off'
-    db.prepare(`INSERT INTO schedule_daily(tenant_id,staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,'off','morning',1)
-                ON CONFLICT(staff_id,date) DO UPDATE SET status='off', is_manual_override=1`)
+  } else if (type === 'move_off') {
+    // target_date = off asli → jadi work; partner_date = tanggal baru → jadi off
+    const original = db.prepare('SELECT * FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.requester_id, sw.target_date);
+    const newDate = db.prepare('SELECT * FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.requester_id, sw.partner_date);
+    if (!original || original.status !== 'off') return { error: 'Off day asli sudah berubah, swap tidak valid' };
+    if (!newDate || newDate.status !== 'work') return { error: 'Tanggal baru sudah berubah / bukan work, swap tidak valid' };
+    const staff = db.prepare('SELECT current_shift FROM staff WHERE id = ?').get(sw.requester_id);
+    db.transaction(() => {
+      db.prepare("UPDATE schedule_daily SET status = 'work', shift = ?, is_manual_override = 1 WHERE staff_id = ? AND date = ?")
+        .run(staff?.current_shift || 'morning', sw.requester_id, sw.target_date);
+      db.prepare("UPDATE schedule_daily SET status = 'off', is_manual_override = 1 WHERE staff_id = ? AND date = ?")
+        .run(sw.requester_id, sw.partner_date);
+    })();
+  } else if (type === 'sick') {
+    db.prepare(`INSERT INTO schedule_daily(tenant_id,staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,'sick','morning',1)
+                ON CONFLICT(staff_id,date) DO UPDATE SET status='sick', is_manual_override=1`)
       .run(sw.tenant_id, sw.requester_id, sw.target_date);
   }
   return { ok: true };
@@ -1113,16 +1125,20 @@ app.get('/api/bot/colleagues/:id/shift/:date', tgAuth, (req, res) => {
 });
 
 app.post('/api/bot/swap-request', tgAuth, (req, res) => {
-  const { target_date, reason, target_staff_id, partner_date } = req.body || {};
+  const { swap_type, target_date, reason, target_staff_id, partner_date } = req.body || {};
+  const type = ['trade', 'move_off', 'sick'].includes(swap_type) ? swap_type : null;
+  if (!type) return fail(res, 400, 'swap_type harus salah satu: trade, move_off, sick');
   if (!target_date) return fail(res, 400, 'Tanggal diperlukan');
-  // Validasi requester punya jadwal di target_date
-  const sched = db.prepare('SELECT shift, status FROM schedule_daily WHERE staff_id = ? AND date = ?').get(req.staff.id, target_date);
-  if (!sched) return fail(res, 400, `Anda tidak punya jadwal di ${target_date}`);
-  if (['off', 'sick', 'leave'].includes(sched.status)) return fail(res, 400, `Jadwal Anda di ${target_date} sudah ${sched.status.toUpperCase()}`);
 
+  const targetSched = db.prepare('SELECT shift, status FROM schedule_daily WHERE staff_id = ? AND date = ?').get(req.staff.id, target_date);
   let partner = null;
   let pDate = null;
-  if (target_staff_id) {
+  let currentShift = targetSched?.shift || req.staff.current_shift;
+
+  if (type === 'trade') {
+    if (!targetSched) return fail(res, 400, `Anda tidak punya jadwal di ${target_date}`);
+    if (['off', 'sick', 'leave'].includes(targetSched.status)) return fail(res, 400, `Jadwal Anda di ${target_date} sudah ${targetSched.status.toUpperCase()}`);
+    if (!target_staff_id) return fail(res, 400, 'Partner diperlukan untuk trade');
     partner = db.prepare('SELECT * FROM staff WHERE id = ? AND tenant_id = ? AND is_active = 1 AND is_approved = 1').get(+target_staff_id, req.staff.tenant_id);
     if (!partner) return fail(res, 400, 'Partner tidak ditemukan / tidak aktif');
     if (partner.id === req.staff.id) return fail(res, 400, 'Tidak bisa swap dengan diri sendiri');
@@ -1130,16 +1146,33 @@ app.post('/api/bot/swap-request', tgAuth, (req, res) => {
     const partnerSched = db.prepare('SELECT shift, status FROM schedule_daily WHERE staff_id = ? AND date = ?').get(partner.id, pDate);
     if (!partnerSched) return fail(res, 400, `Partner tidak punya jadwal di ${pDate}`);
     if (['off', 'sick', 'leave'].includes(partnerSched.status)) return fail(res, 400, `Partner sudah ${partnerSched.status.toUpperCase()} di ${pDate}`);
+  } else if (type === 'move_off') {
+    // target_date = tanggal off asli (yang mau dipindah)
+    // partner_date = tanggal baru yang diinginkan jadi off
+    if (!targetSched) return fail(res, 400, `Anda tidak punya jadwal di ${target_date}`);
+    if (targetSched.status !== 'off') return fail(res, 400, `Tanggal ${target_date} bukan jadwal OFF Anda. Pilih hari off Anda yang ingin dipindah.`);
+    if (!partner_date) return fail(res, 400, 'Tanggal baru diperlukan (hari yang diinginkan jadi off)');
+    if (partner_date === target_date) return fail(res, 400, 'Tanggal baru harus beda dari tanggal off asli');
+    const newSched = db.prepare('SELECT status FROM schedule_daily WHERE staff_id = ? AND date = ?').get(req.staff.id, partner_date);
+    if (!newSched) return fail(res, 400, `Anda tidak punya jadwal di ${partner_date}`);
+    if (newSched.status !== 'work') return fail(res, 400, `Tanggal ${partner_date} bukan jadwal kerja (${newSched.status}). Tidak bisa dipindah jadi off.`);
+    pDate = partner_date;
+  } else if (type === 'sick') {
+    if (!reason || !reason.trim()) return fail(res, 400, 'Alasan sakit diperlukan');
+    // Boleh untuk tanggal apapun (scheduled work) — tidak bisa double sick kalau sudah sick/leave/off
+    if (targetSched && ['sick', 'leave', 'off'].includes(targetSched.status)) {
+      return fail(res, 400, `Jadwal ${target_date} sudah ${targetSched.status.toUpperCase()}`);
+    }
   }
 
-  const r = db.prepare(`INSERT INTO swap_requests(tenant_id,requester_id,target_date,current_shift,reason,status,target_staff_id,partner_date)
-                        VALUES(?,?,?,?,?,'pending',?,?)`)
-    .run(req.staff.tenant_id, req.staff.id, target_date, sched.shift, reason || '', target_staff_id || null, pDate);
+  const r = db.prepare(`INSERT INTO swap_requests(tenant_id,requester_id,target_date,current_shift,reason,status,target_staff_id,partner_date,swap_type)
+                        VALUES(?,?,?,?,?,'pending',?,?,?)`)
+    .run(req.staff.tenant_id, req.staff.id, target_date, currentShift, reason || '', target_staff_id || null, pDate, type);
   const swapId = r.lastInsertRowid;
 
-  notifySwapRequest(req.staff.tenant_id, req.staff, partner, target_date, pDate, sched.shift, reason, swapId).catch((e) => console.warn('[bot] notifySwapRequest:', e.message));
+  notifySwapRequest(req.staff.tenant_id, req.staff, partner, target_date, pDate, currentShift, reason, swapId, type).catch((e) => console.warn('[bot] notifySwapRequest:', e.message));
   emitLiveUpdate(req.staff.tenant_id, 'swap_request', { swap_id: swapId });
-  ok(res, { id: swapId, type: target_staff_id ? 'trade' : 'off' });
+  ok(res, { id: swapId, type });
 });
 
 app.post('/api/bot/clock-in-request-qr', tgAuth, async (req, res) => {

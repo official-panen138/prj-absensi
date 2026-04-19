@@ -191,31 +191,46 @@ function attachHandlers(bot, tenantId) {
     const sw = db.prepare('SELECT * FROM swap_requests WHERE id = ? AND tenant_id = ?').get(swapId, tenantId);
     if (!sw) return ctx.answerCallbackQuery({ text: 'Swap tidak ditemukan', show_alert: true });
     if (sw.status !== 'pending') return ctx.answerCallbackQuery({ text: 'Sudah diproses sebelumnya', show_alert: true });
-    // Apply schedule update
-    if (sw.target_staff_id) {
-      const partnerDate = sw.partner_date || sw.target_date;
-      const reqSched = db.prepare('SELECT shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.requester_id, sw.target_date);
-      const partnerSched = db.prepare('SELECT shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.target_staff_id, partnerDate);
-      if (!reqSched || !partnerSched) return ctx.answerCallbackQuery({ text: 'Schedule sudah berubah', show_alert: true });
-      db.transaction(() => {
-        db.prepare('UPDATE schedule_daily SET shift = ?, is_manual_override = 1 WHERE staff_id = ? AND date = ?').run(partnerSched.shift, sw.requester_id, sw.target_date);
-        db.prepare('UPDATE schedule_daily SET shift = ?, is_manual_override = 1 WHERE staff_id = ? AND date = ?').run(reqSched.shift, sw.target_staff_id, partnerDate);
-      })();
-    } else {
-      db.prepare(`INSERT INTO schedule_daily(tenant_id,staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,'off','morning',1)
-                  ON CONFLICT(staff_id,date) DO UPDATE SET status='off', is_manual_override=1`)
-        .run(sw.tenant_id, sw.requester_id, sw.target_date);
-    }
+    const type = sw.swap_type || (sw.target_staff_id ? 'trade' : 'sick');
+    let err = null;
+    try {
+      if (type === 'trade') {
+        const pDate = sw.partner_date || sw.target_date;
+        const r1 = db.prepare('SELECT shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.requester_id, sw.target_date);
+        const r2 = db.prepare('SELECT shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.target_staff_id, pDate);
+        if (!r1 || !r2) err = 'Schedule sudah berubah';
+        else db.transaction(() => {
+          db.prepare('UPDATE schedule_daily SET shift = ?, is_manual_override = 1 WHERE staff_id = ? AND date = ?').run(r2.shift, sw.requester_id, sw.target_date);
+          db.prepare('UPDATE schedule_daily SET shift = ?, is_manual_override = 1 WHERE staff_id = ? AND date = ?').run(r1.shift, sw.target_staff_id, pDate);
+        })();
+      } else if (type === 'move_off') {
+        const orig = db.prepare('SELECT * FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.requester_id, sw.target_date);
+        const next = db.prepare('SELECT * FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.requester_id, sw.partner_date);
+        if (!orig || orig.status !== 'off' || !next || next.status !== 'work') err = 'Schedule sudah berubah';
+        else {
+          const staff = db.prepare('SELECT current_shift FROM staff WHERE id = ?').get(sw.requester_id);
+          db.transaction(() => {
+            db.prepare("UPDATE schedule_daily SET status='work', shift=?, is_manual_override=1 WHERE staff_id=? AND date=?").run(staff?.current_shift || 'morning', sw.requester_id, sw.target_date);
+            db.prepare("UPDATE schedule_daily SET status='off', is_manual_override=1 WHERE staff_id=? AND date=?").run(sw.requester_id, sw.partner_date);
+          })();
+        }
+      } else if (type === 'sick') {
+        db.prepare(`INSERT INTO schedule_daily(tenant_id,staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,'sick','morning',1)
+                    ON CONFLICT(staff_id,date) DO UPDATE SET status='sick', is_manual_override=1`)
+          .run(sw.tenant_id, sw.requester_id, sw.target_date);
+      }
+    } catch (e) { err = e.message; }
+    if (err) return ctx.answerCallbackQuery({ text: err, show_alert: true });
+
     db.prepare('UPDATE swap_requests SET status = ? WHERE id = ?').run('approved', swapId);
     emitLiveUpdate(tenantId, 'swap_approved', { swap_id: swapId });
-    // Notify requester
     const requester = db.prepare('SELECT name, telegram_id FROM staff WHERE id = ?').get(sw.requester_id);
     if (requester?.telegram_id) {
-      const typeLabel = sw.target_staff_id ? 'Swap (Trade)' : 'Request OFF';
+      const typeLabel = { trade: 'Trade Shift', move_off: 'Tukar Off Day', sick: 'Izin Sakit' }[type] || 'Swap';
       try { await bot.api.sendMessage(requester.telegram_id, `✅ *${typeLabel}* untuk *${sw.target_date}* di-approve!`, { parse_mode: 'Markdown', reply_markup: openMiniAppKeyboard(tenantId) }); } catch {}
     }
     const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
-    await ctx.editMessageText(`✅ *Swap APPROVED*\n_oleh ${by}_`, { parse_mode: 'Markdown' });
+    await ctx.editMessageText(`✅ *APPROVED*\n_oleh ${by}_`, { parse_mode: 'Markdown' });
     await ctx.answerCallbackQuery({ text: '✅ Approved!' });
   });
 
@@ -434,7 +449,7 @@ export async function notifyIpViolation(tenantId, staff, action, ip) {
   );
 }
 
-export async function notifySwapRequest(tenantId, requester, partner, targetDate, partnerDate, currentShift, reason, swapId) {
+export async function notifySwapRequest(tenantId, requester, partner, targetDate, partnerDate, currentShift, reason, swapId, swapType) {
   const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
   if (muted.includes('shift_swap')) return;
   const entry = runningBots.get(tenantId);
@@ -444,16 +459,24 @@ export async function notifySwapRequest(tenantId, requester, partner, targetDate
   const mention = buildHeadMention(requester.department_id);
   const dept = requester.department ? ` · ${requester.department}` : '';
   let text;
-  if (partner) {
-    text = `${mention}🔄 *SWAP REQUEST (Trade)*\n\n` +
+  if (swapType === 'trade') {
+    text = `${mention}🔄 *SWAP REQUEST (Trade Shift)*\n\n` +
       `👤 ${requester.name}${dept}\n📅 ${targetDate} _(${currentShift})_\n` +
       `        ↕️\n` +
-      `👤 ${partner.name}\n📅 ${partnerDate || targetDate}` +
+      `👤 ${partner?.name || '-'}\n📅 ${partnerDate || targetDate}` +
+      (reason ? `\n\n💬 ${reason}` : '');
+  } else if (swapType === 'move_off') {
+    text = `${mention}🔁 *TUKAR OFF DAY*\n\n` +
+      `👤 ${requester.name}${dept}\n` +
+      `Off asli: 📅 *${targetDate}*\n` +
+      `Pindah ke: 📅 *${partnerDate}*` +
+      (reason ? `\n\n💬 ${reason}` : '');
+  } else if (swapType === 'sick') {
+    text = `${mention}🤒 *IZIN SAKIT*\n\n` +
+      `👤 ${requester.name}${dept}\n📅 ${targetDate}` +
       (reason ? `\n\n💬 ${reason}` : '');
   } else {
-    text = `${mention}🔄 *REQUEST OFF*\n\n` +
-      `👤 ${requester.name}${dept}\n📅 ${targetDate} _(${currentShift})_` +
-      (reason ? `\n\n💬 ${reason}` : '');
+    text = `${mention}🔄 *Swap Request*\n👤 ${requester.name}${dept}\n📅 ${targetDate}` + (reason ? `\n💬 ${reason}` : '');
   }
   const kb = new InlineKeyboard()
     .text('✅ Approve', `swap_approve_${swapId}`)

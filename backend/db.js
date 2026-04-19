@@ -244,7 +244,7 @@ function migrateV2_MultiTenant() {
     }
   } catch (e) { console.warn('[db] dept backfill:', e.message); }
 
-  // swap_requests: tambah target_staff_id (NULL = type off, set = type trade) + partner_date
+  // swap_requests: tambah target_staff_id (untuk trade) + partner_date + swap_type
   if (!hasColumn('swap_requests', 'target_staff_id')) {
     db.exec('ALTER TABLE swap_requests ADD COLUMN target_staff_id INTEGER');
     console.log('[db] added target_staff_id to swap_requests');
@@ -252,6 +252,12 @@ function migrateV2_MultiTenant() {
   if (!hasColumn('swap_requests', 'partner_date')) {
     db.exec('ALTER TABLE swap_requests ADD COLUMN partner_date TEXT');
     console.log('[db] added partner_date to swap_requests');
+  }
+  if (!hasColumn('swap_requests', 'swap_type')) {
+    db.exec("ALTER TABLE swap_requests ADD COLUMN swap_type TEXT DEFAULT 'sick'");
+    // Backfill: trade kalau target_staff_id ada, sick kalau tidak (safe default)
+    db.exec("UPDATE swap_requests SET swap_type = CASE WHEN target_staff_id IS NOT NULL THEN 'trade' ELSE 'sick' END WHERE swap_type IS NULL OR swap_type = ''");
+    console.log('[db] added swap_type to swap_requests + backfill');
   }
 
   // dept_break_settings & dept_shifts: per-department override

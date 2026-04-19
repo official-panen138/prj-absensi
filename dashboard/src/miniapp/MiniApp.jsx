@@ -63,7 +63,7 @@ export default function MiniApp() {
   const [now, setNow] = useState(Date.now());
   const [popup, setPopup] = useState(null);
   const [showSwap, setShowSwap] = useState(false);
-  const [swapForm, setSwapForm] = useState({ type: 'off', target_date: '', reason: '', target_staff_id: '', partner_date: '' });
+  const [swapForm, setSwapForm] = useState({ type: 'sick', target_date: '', reason: '', target_staff_id: '', partner_date: '' });
   const [colleagues, setColleagues] = useState([]);
   const [partnerShift, setPartnerShift] = useState(null);
 
@@ -390,22 +390,52 @@ export default function MiniApp() {
         </button>
         {showSwap && (
           <div style={{marginTop:12,padding:14,background:'rgb(31 41 55)',borderRadius:12,border:'1px solid rgb(55 65 81)'}}>
-            <div style={{display:'flex',gap:8,marginBottom:12}}>
-              <button onClick={() => setSwapForm((f) => ({ ...f, type: 'off' }))}
-                style={{flex:1,padding:'8px',borderRadius:8,border:'none',cursor:'pointer',
-                  background: swapForm.type === 'off' ? '#dc2626' : '#374151',
-                  color:'#fff',fontSize:12,fontWeight:600}}>📅 Request OFF</button>
+            <div style={{display:'flex',gap:6,marginBottom:12}}>
+              <button onClick={() => setSwapForm((f) => ({ ...f, type: 'sick' }))}
+                style={{flex:1,padding:'8px 4px',borderRadius:8,border:'none',cursor:'pointer',
+                  background: swapForm.type === 'sick' ? '#d97706' : '#374151',
+                  color:'#fff',fontSize:11,fontWeight:600}}>🤒 Izin Sakit</button>
+              <button onClick={() => setSwapForm((f) => ({ ...f, type: 'move_off' }))}
+                style={{flex:1,padding:'8px 4px',borderRadius:8,border:'none',cursor:'pointer',
+                  background: swapForm.type === 'move_off' ? '#dc2626' : '#374151',
+                  color:'#fff',fontSize:11,fontWeight:600}}>🔁 Tukar Off</button>
               <button onClick={() => setSwapForm((f) => ({ ...f, type: 'trade' }))}
-                style={{flex:1,padding:'8px',borderRadius:8,border:'none',cursor:'pointer',
+                style={{flex:1,padding:'8px 4px',borderRadius:8,border:'none',cursor:'pointer',
                   background: swapForm.type === 'trade' ? '#2563eb' : '#374151',
-                  color:'#fff',fontSize:12,fontWeight:600}}>🔄 Trade Shift</button>
+                  color:'#fff',fontSize:11,fontWeight:600}}>🔄 Trade Shift</button>
             </div>
 
+            {swapForm.type === 'sick' && (
+              <div style={{padding:'8px 10px',background:'rgba(217,119,6,0.1)',border:'1px solid rgba(217,119,6,0.3)',borderRadius:8,fontSize:11,color:'#fbbf24',marginBottom:10}}>
+                Izin sakit untuk tanggal kerja. Status akan jadi SICK setelah approve.
+              </div>
+            )}
+            {swapForm.type === 'move_off' && (
+              <div style={{padding:'8px 10px',background:'rgba(220,38,38,0.1)',border:'1px solid rgba(220,38,38,0.3)',borderRadius:8,fontSize:11,color:'#fca5a5',marginBottom:10}}>
+                Pindahkan jadwal OFF Anda ke tanggal lain. Hari off asli jadi work, tanggal baru jadi off.
+              </div>
+            )}
+            {swapForm.type === 'trade' && (
+              <div style={{padding:'8px 10px',background:'rgba(37,99,235,0.1)',border:'1px solid rgba(37,99,235,0.3)',borderRadius:8,fontSize:11,color:'#93c5fd',marginBottom:10}}>
+                Tukar shift dengan rekan se-department di tanggal yang sama / berbeda.
+              </div>
+            )}
+
             <div style={{marginBottom:10}}>
-              <div style={{fontSize:10,color:'#9ca3af',marginBottom:4,letterSpacing:1}}>TANGGAL ANDA</div>
+              <div style={{fontSize:10,color:'#9ca3af',marginBottom:4,letterSpacing:1}}>
+                {swapForm.type === 'sick' ? 'TANGGAL SAKIT' : swapForm.type === 'move_off' ? 'TANGGAL OFF ASLI ANDA' : 'TANGGAL ANDA'}
+              </div>
               <input type="date" value={swapForm.target_date} onChange={(e) => setSwapForm((f) => ({ ...f, target_date: e.target.value }))}
                 style={{width:'100%',padding:'10px',borderRadius:8,border:'1px solid rgb(55 65 81)',background:'rgb(17 24 39)',color:'#f3f4f6',fontSize:13}} />
             </div>
+
+            {swapForm.type === 'move_off' && (
+              <div style={{marginBottom:10}}>
+                <div style={{fontSize:10,color:'#9ca3af',marginBottom:4,letterSpacing:1}}>TANGGAL BARU UNTUK OFF</div>
+                <input type="date" value={swapForm.partner_date} onChange={(e) => setSwapForm((f) => ({ ...f, partner_date: e.target.value }))}
+                  style={{width:'100%',padding:'10px',borderRadius:8,border:'1px solid rgb(55 65 81)',background:'rgb(17 24 39)',color:'#f3f4f6',fontSize:13}} />
+              </div>
+            )}
 
             {swapForm.type === 'trade' && (
               <>
@@ -419,7 +449,7 @@ export default function MiniApp() {
                   {colleagues.length === 0 && <div style={{fontSize:11,color:'#9ca3af',marginTop:4}}>Tidak ada rekan di department Anda.</div>}
                 </div>
                 <div style={{marginBottom:10}}>
-                  <div style={{fontSize:10,color:'#9ca3af',marginBottom:4,letterSpacing:1}}>TANGGAL PARTNER (kosong = sama dengan tanggal Anda)</div>
+                  <div style={{fontSize:10,color:'#9ca3af',marginBottom:4,letterSpacing:1}}>TANGGAL PARTNER (kosong = sama)</div>
                   <input type="date" value={swapForm.partner_date} onChange={(e) => setSwapForm((f) => ({ ...f, partner_date: e.target.value }))}
                     style={{width:'100%',padding:'10px',borderRadius:8,border:'1px solid rgb(55 65 81)',background:'rgb(17 24 39)',color:'#f3f4f6',fontSize:13}} />
                   {partnerShift && (
@@ -432,31 +462,36 @@ export default function MiniApp() {
             )}
 
             <div style={{marginBottom:10}}>
-              <div style={{fontSize:10,color:'#9ca3af',marginBottom:4,letterSpacing:1}}>ALASAN (opsional)</div>
+              <div style={{fontSize:10,color:'#9ca3af',marginBottom:4,letterSpacing:1}}>
+                ALASAN {swapForm.type === 'sick' ? '(wajib)' : '(opsional)'}
+              </div>
               <textarea value={swapForm.reason} onChange={(e) => setSwapForm((f) => ({ ...f, reason: e.target.value }))}
-                placeholder="Acara keluarga / sakit / dll"
+                placeholder={swapForm.type === 'sick' ? 'Demam, flu, dll' : 'Acara keluarga / dll'}
                 style={{width:'100%',padding:'10px',borderRadius:8,border:'1px solid rgb(55 65 81)',background:'rgb(17 24 39)',color:'#f3f4f6',fontSize:13,minHeight:60,resize:'vertical'}} />
             </div>
 
-            <Btn color={swapForm.type === 'off' ? 'red' : 'emerald'} onClick={async () => {
-              if (!swapForm.target_date) { setErr('Pilih tanggal Anda'); return; }
+            <Btn color={swapForm.type === 'sick' ? 'amber' : swapForm.type === 'move_off' ? 'red' : 'emerald'} onClick={async () => {
+              if (!swapForm.target_date) { setErr('Pilih tanggal'); return; }
               if (swapForm.type === 'trade' && !swapForm.target_staff_id) { setErr('Pilih partner'); return; }
+              if (swapForm.type === 'move_off' && !swapForm.partner_date) { setErr('Pilih tanggal baru untuk off'); return; }
+              if (swapForm.type === 'sick' && !swapForm.reason.trim()) { setErr('Alasan sakit wajib diisi'); return; }
               const body = {
+                swap_type: swapForm.type,
                 target_date: swapForm.target_date,
                 reason: swapForm.reason,
                 target_staff_id: swapForm.type === 'trade' ? +swapForm.target_staff_id : null,
-                partner_date: swapForm.type === 'trade' ? (swapForm.partner_date || null) : null,
+                partner_date: (swapForm.type === 'trade' || swapForm.type === 'move_off') ? (swapForm.partner_date || null) : null,
               };
               try {
                 setBusy(true);
                 await api('/swap-request', token, { method: 'POST', body });
                 setInfo('✓ Request dikirim ke admin. Tunggu approval di Telegram.');
-                setSwapForm({ type: 'off', target_date: '', reason: '', target_staff_id: '', partner_date: '' });
+                setSwapForm({ type: 'sick', target_date: '', reason: '', target_staff_id: '', partner_date: '' });
                 setShowSwap(false);
               } catch (e) { setErr(e.message); }
               finally { setBusy(false); }
             }} disabled={busy}>
-              📤 Submit {swapForm.type === 'off' ? 'Request OFF' : 'Trade Request'}
+              📤 Submit {swapForm.type === 'sick' ? 'Izin Sakit' : swapForm.type === 'move_off' ? 'Tukar Off Day' : 'Trade Shift'}
             </Btn>
           </div>
         )}
