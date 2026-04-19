@@ -62,44 +62,45 @@ function fetchScheduleData(deptId, requesterId, focusDate) {
 }
 
 function renderSvg({ staff, dates, sched, marked, title, requesterId }) {
-  const cellW = 56, cellH = 36, nameW = 180;
-  const headerH = 70, footerH = 36;
+  const cellW = 56, cellH = 36, nameW = 200;
+  const headerH = 70, footerH = 40;
   const W = nameW + cellW * dates.length + 20;
   const H = headerH + cellH * staff.length + footerH + 20;
-  const dayLabels = ['Sn', 'Sl', 'Rb', 'Km', 'Jm', 'Sb', 'Mg'];
+  const dayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const FF = 'DejaVu Sans, Arial, sans-serif';
 
   const parts = [`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`];
   parts.push(`<rect width="100%" height="100%" fill="${COLOR.bg}"/>`);
   // Title
-  parts.push(`<text x="10" y="24" fill="${COLOR.accent}" font-size="14" font-weight="bold" font-family="monospace">${ESC(title)}</text>`);
+  parts.push(`<text x="10" y="24" fill="${COLOR.accent}" font-size="14" font-weight="bold" font-family="${FF}">${ESC(title)}</text>`);
   // Date headers
   dates.forEach((d, i) => {
     const x = nameW + i * cellW + cellW / 2;
     const isWeekend = i === 5 || i === 6;
-    parts.push(`<text x="${x}" y="${44}" fill="${isWeekend ? COLOR.weekend : COLOR.textMuted}" font-size="10" text-anchor="middle" font-family="monospace">${dayLabels[i]}</text>`);
-    parts.push(`<text x="${x}" y="${60}" fill="${isWeekend ? COLOR.weekend : COLOR.text}" font-size="11" text-anchor="middle" font-family="monospace" font-weight="bold">${d.slice(8, 10)}</text>`);
+    parts.push(`<text x="${x}" y="${44}" fill="${isWeekend ? COLOR.weekend : COLOR.textMuted}" font-size="10" text-anchor="middle" font-family="${FF}">${dayLabels[i]}</text>`);
+    parts.push(`<text x="${x}" y="${60}" fill="${isWeekend ? COLOR.weekend : COLOR.text}" font-size="11" text-anchor="middle" font-family="${FF}" font-weight="bold">${d.slice(8, 10)}</text>`);
   });
   // Rows
   staff.forEach((s, ri) => {
     const y = headerH + ri * cellH;
     const isReq = s.id === requesterId;
-    // Name
     if (isReq) {
       parts.push(`<rect x="0" y="${y}" width="${nameW}" height="${cellH}" fill="${COLOR.panel}"/>`);
     }
-    parts.push(`<text x="10" y="${y + cellH / 2 + 4}" fill="${isReq ? COLOR.accent : COLOR.text}" font-size="12" font-weight="${isReq ? 'bold' : 'normal'}">${ESC(isReq ? '▶ ' : '')}${ESC(s.name.slice(0, 22))}</text>`);
+    const namePrefix = isReq ? '> ' : '  ';
+    parts.push(`<text x="10" y="${y + cellH / 2 + 4}" fill="${isReq ? COLOR.accent : COLOR.text}" font-size="12" font-weight="${isReq ? 'bold' : 'normal'}" font-family="${FF}">${ESC(namePrefix + s.name.slice(0, 24))}</text>`);
     dates.forEach((d, ci) => {
       const cellX = nameW + ci * cellW;
       const sd = sched[`${s.id}_${d}`];
       const style = cellStyle(sd);
       const isMarked = marked && marked[s.id] && marked[s.id].includes(d);
       parts.push(`<rect x="${cellX + 2}" y="${y + 2}" width="${cellW - 4}" height="${cellH - 4}" fill="${style.fill}" rx="4" stroke="${isMarked ? COLOR.marked.stroke : 'none'}" stroke-width="${isMarked ? COLOR.marked.width : 0}"/>`);
-      parts.push(`<text x="${cellX + cellW / 2}" y="${y + cellH / 2 + 5}" fill="${style.text}" font-size="13" font-weight="bold" text-anchor="middle" font-family="monospace">${ESC(style.label)}</text>`);
+      parts.push(`<text x="${cellX + cellW / 2}" y="${y + cellH / 2 + 5}" fill="${style.text}" font-size="13" font-weight="bold" text-anchor="middle" font-family="${FF}">${ESC(style.label)}</text>`);
     });
   });
   // Footer legend
-  const fy = headerH + staff.length * cellH + 20;
-  parts.push(`<text x="10" y="${fy}" fill="${COLOR.textMuted}" font-size="10" font-family="monospace">M=Morning · D=Middle · N=Night · OFF=Off · SCK=Sick · LV=Leave · ▶=requester · □=terdampak</text>`);
+  const fy = headerH + staff.length * cellH + 24;
+  parts.push(`<text x="10" y="${fy}" fill="${COLOR.textMuted}" font-size="10" font-family="${FF}">M=Morning  D=Middle  N=Night  OFF  SCK=Sick  LV=Leave   &gt;=requester   yellow border=affected</text>`);
   parts.push(`</svg>`);
   return parts.join('');
 }
