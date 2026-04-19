@@ -244,6 +244,26 @@ function migrateV2_MultiTenant() {
     }
   } catch (e) { console.warn('[db] dept backfill:', e.message); }
 
+  // dept_break_settings & dept_shifts: per-department override
+  // (kalau dept tidak punya override, fallback ke break_settings/shifts tenant default)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dept_break_settings (
+      tenant_id INTEGER NOT NULL,
+      department_id INTEGER NOT NULL,
+      type TEXT NOT NULL,
+      daily_quota_minutes INTEGER,
+      PRIMARY KEY (tenant_id, department_id, type)
+    );
+    CREATE TABLE IF NOT EXISTS dept_shifts (
+      tenant_id INTEGER NOT NULL,
+      department_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      start_time TEXT,
+      end_time TEXT,
+      PRIMARY KEY (tenant_id, department_id, name)
+    );
+  `);
+
   // qr_sessions: dynamic QR untuk clock-in/clock-out (generate per request, expire 5 menit)
   db.exec(`
     CREATE TABLE IF NOT EXISTS qr_sessions (

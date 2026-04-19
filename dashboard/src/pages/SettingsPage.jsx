@@ -43,9 +43,49 @@ export default function SettingsPage({ token, user }) {
   const [showPin, setShowPin] = useState(false);
   const [botForm, setBotForm] = useState({ bot_token: '', monitor_group_chat_id: '', miniapp_url: '' });
   const [motivForm, setMotivForm] = useState({ start: '', end: '' });
+  const [departments, setDepartments] = useState([]);
+  const [breakDeptId, setBreakDeptId] = useState(''); // '' = tenant default
+  const [shiftDeptId, setShiftDeptId] = useState('');
+  const [allBreakOverrides, setAllBreakOverrides] = useState([]);
+  const [allShiftOverrides, setAllShiftOverrides] = useState([]);
+
+  useEffect(() => {
+    apiFetch(token, '/departments').then((r) => setDepartments(r.data || [])).catch(() => {});
+  }, [token]);
   const [botTokenMasked, setBotTokenMasked] = useState('');
   const [botStatus, setBotStatus] = useState(null);
   const [showBotToken, setShowBotToken] = useState(false);
+
+  const applyBreakForm = (tenantRows, deptRows, deptId) => {
+    const base = { ...DEFAULT_BREAK_SETTINGS };
+    tenantRows.forEach((b) => { if (base[b.type]) base[b.type] = { daily_quota_minutes: b.daily_quota_minutes }; });
+    if (deptId) {
+      deptRows.filter((r) => r.department_id === +deptId).forEach((b) => {
+        if (base[b.type]) base[b.type] = { daily_quota_minutes: b.daily_quota_minutes };
+      });
+    }
+    setBreakForm(base);
+  };
+  const applyShiftForm = (tenantRows, deptRows, deptId) => {
+    const base = { ...DEFAULT_SHIFT_TIMES };
+    tenantRows.forEach((s) => { if (base[s.name]) base[s.name] = { start: s.start_time?.substring(0, 5), end: s.end_time?.substring(0, 5) }; });
+    if (deptId) {
+      deptRows.filter((r) => r.department_id === +deptId).forEach((s) => {
+        if (base[s.name]) base[s.name] = { start: s.start_time?.substring(0, 5), end: s.end_time?.substring(0, 5) };
+      });
+    }
+    setShiftForm(base);
+  };
+  const switchBreakDept = (id) => {
+    setBreakDeptId(id);
+    applyBreakForm([], allBreakOverrides, id);
+    // Re-fetch tenant rows quietly
+    apiFetch(token, '/settings').then((r) => applyBreakForm(r.data?.break_settings || [], r.data?.dept_break_settings || [], id));
+  };
+  const switchShiftDept = (id) => {
+    setShiftDeptId(id);
+    apiFetch(token, '/settings').then((r) => applyShiftForm(r.data?.shifts || [], r.data?.dept_shifts || [], id));
+  };
 
   const fetchSettings = useCallback(async () => {
     setLoading(true);
@@ -53,12 +93,11 @@ export default function SettingsPage({ token, user }) {
       const data = await apiFetch(token, '/settings');
       const d = data.data || {};
       const s = d.settings || {};
-      const bs = {};
-      (d.break_settings || []).forEach((b) => { if (['smoke', 'toilet', 'outside'].includes(b.type)) bs[b.type] = { daily_quota_minutes: b.daily_quota_minutes }; });
-      if (Object.keys(bs).length) setBreakForm((prev) => ({ ...prev, ...bs }));
-      const sm = {};
-      (d.shifts || []).forEach((s) => { sm[s.name] = { start: s.start_time?.substring(0, 5), end: s.end_time?.substring(0, 5) }; });
-      if (Object.keys(sm).length) setShiftForm((prev) => ({ ...prev, ...sm }));
+      setAllBreakOverrides(d.dept_break_settings || []);
+      setAllShiftOverrides(d.dept_shifts || []);
+      // Apply form value sesuai dept yang sedang dipilih
+      applyBreakForm(d.break_settings || [], d.dept_break_settings || [], breakDeptId);
+      applyShiftForm(d.shifts || [], d.dept_shifts || [], shiftDeptId);
       const ip = s.ip_whitelist?.value;
       if (ip?.prefixes) { const arr = [...ip.prefixes]; while (arr.length < 5) arr.push(''); setIpForm({ prefixes: arr.slice(0, 5) }); } else if (ip?.prefix) { setIpForm({ prefixes: [ip.prefix, '', '', '', ''] }); }
       const odr = s.off_day_rules?.value; if (odr) setOffDayForm((prev) => ({ ...prev, ...odr }));
@@ -192,8 +231,21 @@ export default function SettingsPage({ token, user }) {
 
       {/* Break Settings */}
       <Card className="p-5 mb-4">
-        <SectionHeader title="Break Settings" actions={isAdmin && <Btn size="sm" onClick={() => save('breaks', '/settings/breaks', breakForm)} disabled={saving.breaks}>{saving.breaks ? <Spinner /> : '💾 Save Breaks'}</Btn>} />
-        <div className="text-xs text-gray-500 mb-3.5">Kuota harian per shift. Jika kuota habis, staff tidak bisa ambil break type tersebut lagi.</div>
+        <SectionHeader title="Break Settings" actions={isAdmin && (
+          <div className="flex gap-2 items-center">
+            <select value={breakDeptId} onChange={(e) => switchBreakDept(e.target.value)} className="bg-gray-800 border border-gray-700 text-gray-100 text-xs rounded-md px-2 py-1.5">
+              <option value="">🌐 Default (semua dept)</option>
+              {departments.map((d) => <option key={d.id} value={d.id}>🏬 {d.name}</option>)}
+            </select>
+            <Btn size="sm" onClick={() => save('breaks', '/settings/breaks', { ...breakForm, _department_id: breakDeptId || null })} disabled={saving.breaks}>{saving.breaks ? <Spinner /> : '💾 Save Breaks'}</Btn>
+          </div>
+        )} />
+        <div className="text-xs text-gray-500 mb-3.5">
+          Kuota harian per type. {breakDeptId
+            ? <>Override untuk department <strong>{departments.find((d) => d.id === +breakDeptId)?.name}</strong> — kalau kosong/sama, fallback ke tenant default.</>
+            : <>Default tenant. Bisa override per dept dengan pilih dept dari dropdown.</>
+          }
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {Object.entries(breakForm).map(([type, vals]) => (
             <div key={type} className="p-3.5 bg-gray-800 rounded-lg border border-gray-700">
@@ -206,7 +258,16 @@ export default function SettingsPage({ token, user }) {
 
       {/* Shift Times */}
       <Card className="p-5 mb-4">
-        <SectionHeader title="Shift Times" actions={isAdmin && <Btn size="sm" onClick={() => save('shifts', '/settings/shift-times', shiftForm)} disabled={saving.shifts}>{saving.shifts ? <Spinner /> : '💾 Save Shifts'}</Btn>} />
+        <SectionHeader title="Shift Times" actions={isAdmin && (
+          <div className="flex gap-2 items-center">
+            <select value={shiftDeptId} onChange={(e) => switchShiftDept(e.target.value)} className="bg-gray-800 border border-gray-700 text-gray-100 text-xs rounded-md px-2 py-1.5">
+              <option value="">🌐 Default (semua dept)</option>
+              {departments.map((d) => <option key={d.id} value={d.id}>🏬 {d.name}</option>)}
+            </select>
+            <Btn size="sm" onClick={() => save('shifts', '/settings/shift-times', { ...shiftForm, _department_id: shiftDeptId || null })} disabled={saving.shifts}>{saving.shifts ? <Spinner /> : '💾 Save Shifts'}</Btn>
+          </div>
+        )} />
+        {shiftDeptId && <div className="text-xs text-emerald-400 mb-3.5">Override untuk department <strong>{departments.find((d) => d.id === +shiftDeptId)?.name}</strong></div>}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {Object.entries(shiftForm).map(([shift, vals]) => (
             <div key={shift} className="p-3.5 bg-gray-800 rounded-lg border border-gray-700">

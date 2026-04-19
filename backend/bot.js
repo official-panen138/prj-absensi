@@ -120,9 +120,20 @@ function attachHandlers(bot, tenantId) {
       if (ans !== 'yes' && ans !== 'y') return ctx.reply('Ketik *YES* atau *NO*.', { parse_mode: 'Markdown' });
 
       const today = new Date().toISOString().slice(0, 10);
-      const ins = db.prepare(`INSERT INTO staff(tenant_id,name,category,current_shift,department,telegram_id,telegram_username,join_date,is_active,is_approved)
-                  VALUES(?,?,?,?,?,?,?,?,1,0)`)
-        .run(tenantId, s.form.name, s.form.category, 'morning', s.form.department, String(ctx.from.id), ctx.from.username || null, today);
+      // Resolve department_id (find or create)
+      let deptId = null;
+      if (s.form.department) {
+        const dRow = db.prepare('SELECT id FROM departments WHERE tenant_id = ? AND LOWER(name) = LOWER(?)').get(tenantId, s.form.department);
+        if (dRow) deptId = dRow.id;
+        else {
+          const slug = String(s.form.department).toLowerCase().replace(/[^a-z0-9]+/g, '_');
+          const dr = db.prepare('INSERT INTO departments(tenant_id,name,slug) VALUES(?,?,?)').run(tenantId, s.form.department, slug);
+          deptId = dr.lastInsertRowid;
+        }
+      }
+      const ins = db.prepare(`INSERT INTO staff(tenant_id,name,category,current_shift,department,department_id,telegram_id,telegram_username,join_date,is_active,is_approved)
+                  VALUES(?,?,?,?,?,?,?,?,?,1,0)`)
+        .run(tenantId, s.form.name, s.form.category, 'morning', s.form.department, deptId, String(ctx.from.id), ctx.from.username || null, today);
       const newStaffId = ins.lastInsertRowid;
 
       ctx.session = { step: null, form: {} };
@@ -137,11 +148,24 @@ function attachHandlers(bot, tenantId) {
           .text('✅ Approve', `approve_${newStaffId}`)
           .text('❌ Reject', `reject_${newStaffId}`);
         const tgUser = ctx.from.username ? `@${ctx.from.username}` : `id ${ctx.from.id}`;
-        const text = `🆕 *New registration:*\n👤 ${s.form.name}\n🌏 ${s.form.category_label}\n🏢 ${s.form.department}\n💬 ${tgUser}`;
-        for (const chatId of getAdminChatIds(tenantId)) {
-          try {
-            await bot.api.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: kb });
-          } catch (e) { console.warn('[bot] notify admin failed:', e.message); }
+        const mention = buildHeadMention(deptId);
+        const text = `${mention}🆕 *New registration:*\n👤 ${s.form.name}\n🌏 ${s.form.category_label}\n🏢 ${s.form.department}\n💬 ${tgUser}`;
+        // Kirim ke dept group (kalau ada) — kalau tidak ada, fallback ke admin chat IDs (legacy)
+        const deptChatId = resolveTargetChatId(tenantId, deptId);
+        const dept = getDeptInfo(deptId);
+        if (deptId && dept?.monitor_group_chat_id) {
+          try { await bot.api.sendMessage(deptChatId, text, { parse_mode: 'Markdown', reply_markup: kb }); }
+          catch (e) { console.warn('[bot] notify dept group failed:', e.message); }
+        } else {
+          for (const chatId of getAdminChatIds(tenantId)) {
+            try { await bot.api.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: kb }); }
+            catch (e) { console.warn('[bot] notify admin failed:', e.message); }
+          }
+          // Juga kirim ke tenant monitor group kalau di-set
+          if (deptChatId) {
+            try { await bot.api.sendMessage(deptChatId, text, { parse_mode: 'Markdown', reply_markup: kb }); }
+            catch (e) {}
+          }
         }
       }
     }
@@ -273,42 +297,68 @@ export async function notifyApproved(tenantId, telegramId, name) {
 export async function pushClockQRToMonitor(tenantId, qrSession, staff) {
   const entry = runningBots.get(tenantId);
   if (!entry) return;
-  const { monitorGroupId } = readTenantConfig(tenantId);
-  if (!monitorGroupId) return;
-  // QR text = WMS-<token> (Mini App scanner akan strip prefix WMS- dan kirim token saja)
+  const chatId = resolveTargetChatId(tenantId, staff.department_id);
+  if (!chatId) return;
   const qrText = `WMS-${qrSession.qr_token}`;
   const png = await QRCode.toBuffer(qrText, { width: 320, margin: 2 });
   const isStart = qrSession.action === 'clock_in';
   const label = isStart ? '📥 *START KERJA*' : '📤 *PULANG KERJA*';
   const dept = staff.department ? ` — ${staff.department}` : '';
-  const caption = `${label}\n👤 *${staff.name}*${dept}\n⏰ Berlaku 5 menit · sekali pakai`;
+  const mention = buildHeadMention(staff.department_id);
+  const caption = `${mention}${label}\n👤 *${staff.name}*${dept}\n⏰ Berlaku 5 menit · sekali pakai`;
   try {
-    await entry.bot.api.sendPhoto(monitorGroupId, new InputFile(png, `clock-${qrSession.id}.png`), { caption, parse_mode: 'Markdown' });
+    await entry.bot.api.sendPhoto(chatId, new InputFile(png, `clock-${qrSession.id}.png`), { caption, parse_mode: 'Markdown' });
   } catch (e) { console.warn('[bot] pushClockQRToMonitor failed:', e.message); }
 }
 
 export async function pushBreakQRToMonitor(tenantId, breakLog, staff) {
   const entry = runningBots.get(tenantId);
   if (!entry) return;
-  const { monitorGroupId } = readTenantConfig(tenantId);
-  if (!monitorGroupId) return;
+  const chatId = resolveTargetChatId(tenantId, staff.department_id);
+  if (!chatId) return;
   const me = entry.info || (await entry.bot.api.getMe());
   const deepLink = `https://t.me/${me.username}?start=qr_${breakLog.id}_${breakLog.qr_token}`;
   const png = await QRCode.toBuffer(deepLink, { width: 320, margin: 2 });
   const breakLabel = { smoke: '🚬 Smoke', toilet: '🚻 Toilet', outside: '🏪 Go Out' }[breakLog.type] || breakLog.type;
-  const caption = `${breakLabel}\n👤 *${staff.name}* — ${staff.department || '-'}\n⏰ Expires in 5 min\n\nScan QR ini untuk Back-to-Work.`;
+  const mention = buildHeadMention(staff.department_id);
+  const caption = `${mention}${breakLabel}\n👤 *${staff.name}* — ${staff.department || '-'}\n⏰ Expires in 5 min\n\nScan QR ini untuk Back-to-Work.`;
   try {
-    await entry.bot.api.sendPhoto(monitorGroupId, new InputFile(png, `qr-${breakLog.id}.png`), { caption, parse_mode: 'Markdown' });
+    await entry.bot.api.sendPhoto(chatId, new InputFile(png, `qr-${breakLog.id}.png`), { caption, parse_mode: 'Markdown' });
   } catch (e) { console.warn('[bot] pushBreakQRToMonitor failed:', e.message); }
 }
 
-async function notifyMonitor(tenantId, text) {
+function getDeptInfo(deptId) {
+  if (!deptId) return null;
+  return db.prepare('SELECT id, name, head_telegram_id, head_username, monitor_group_chat_id FROM departments WHERE id = ?').get(deptId);
+}
+
+// Resolve target chat: dept's own group → tenant default group
+function resolveTargetChatId(tenantId, deptId) {
+  const dept = getDeptInfo(deptId);
+  if (dept?.monitor_group_chat_id) return dept.monitor_group_chat_id;
+  return readTenantConfig(tenantId).monitorGroupId;
+}
+
+// Build mention prefix tag head dept (deep link mention selalu nge-ping walau user belum kasih username)
+function buildHeadMention(deptId) {
+  const dept = getDeptInfo(deptId);
+  if (!dept) return '';
+  if (dept.head_telegram_id) {
+    const name = dept.head_username || dept.name + ' Head';
+    return `[${name}](tg://user?id=${dept.head_telegram_id}) `;
+  }
+  if (dept.head_username) return `@${dept.head_username} `;
+  return '';
+}
+
+async function notifyMonitor(tenantId, text, deptId = null, opts = {}) {
   const entry = runningBots.get(tenantId);
   if (!entry) return;
-  const { monitorGroupId } = readTenantConfig(tenantId);
-  if (!monitorGroupId) return;
+  const chatId = resolveTargetChatId(tenantId, deptId);
+  if (!chatId) return;
+  const mention = buildHeadMention(deptId);
   try {
-    await entry.bot.api.sendMessage(monitorGroupId, text, { parse_mode: 'Markdown' });
+    await entry.bot.api.sendMessage(chatId, mention + text, { parse_mode: 'Markdown', ...opts });
   } catch (e) { console.warn('[bot] notifyMonitor failed:', e.message); }
 }
 
@@ -316,7 +366,7 @@ export async function notifyLate(tenantId, staff, lateMin, shift) {
   const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
   if (muted.includes('late')) return;
   const dept = staff.department ? ` · ${staff.department}` : '';
-  await notifyMonitor(tenantId, `⚠️ *TELAT* — ${staff.name}${dept}\n⏱ ${lateMin} menit · shift _${shift}_`);
+  await notifyMonitor(tenantId, `⚠️ *TELAT* — ${staff.name}${dept}\n⏱ ${lateMin} menit · shift _${shift}_`, staff.department_id);
 }
 
 export async function notifyIpViolation(tenantId, staff, action, ip) {
@@ -329,7 +379,8 @@ export async function notifyIpViolation(tenantId, staff, action, ip) {
     tenantId,
     `🚨 *IP VIOLATION* — ${staff.name}${dept}\n` +
     `Mencoba *${actionLabel}* dari IP di luar kantor\n` +
-    `IP: \`${ip}\``
+    `IP: \`${ip}\``,
+    staff.department_id
   );
 }
 
@@ -343,7 +394,8 @@ export async function notifyOvertime(tenantId, staff, breakType, durationMin, li
     tenantId,
     `⏰ *OVERTIME BREAK* — ${staff.name}${dept}\n` +
     `${labels[breakType] || breakType}: *${durationMin}m* / limit ${limitMin}m\n` +
-    `Lewat: *+${overMin} menit*`
+    `Lewat: *+${overMin} menit*`,
+    staff.department_id
   );
 }
 

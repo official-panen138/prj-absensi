@@ -791,25 +791,52 @@ app.get('/api/settings', auth, (req, res) => {
   }
   const break_settings = db.prepare('SELECT type, daily_quota_minutes FROM break_settings WHERE tenant_id = ?').all(tid);
   const shifts = db.prepare('SELECT name, start_time, end_time FROM shifts WHERE tenant_id = ?').all(tid);
-  ok(res, { settings, break_settings, shifts });
+  // Per-department overrides (semua dept dalam tenant)
+  const dept_break_settings = db.prepare('SELECT department_id, type, daily_quota_minutes FROM dept_break_settings WHERE tenant_id = ?').all(tid);
+  const dept_shifts = db.prepare('SELECT department_id, name, start_time, end_time FROM dept_shifts WHERE tenant_id = ?').all(tid);
+  ok(res, { settings, break_settings, shifts, dept_break_settings, dept_shifts });
 });
 
 app.put('/api/settings/breaks', auth, (req, res) => {
   const tid = writeTenantId(req);
   if (!tid) return fail(res, 400, 'No tenant context');
   const body = req.body || {};
-  const upsert = db.prepare('INSERT INTO break_settings(tenant_id,type,daily_quota_minutes) VALUES(?,?,?) ON CONFLICT(tenant_id,type) DO UPDATE SET daily_quota_minutes=excluded.daily_quota_minutes');
-  for (const [type, vals] of Object.entries(body)) upsert.run(tid, type, vals.daily_quota_minutes);
-  ok(res, {});
+  const deptId = body._department_id ? +body._department_id : null;
+  const data = { ...body }; delete data._department_id;
+  if (deptId) {
+    const upsert = db.prepare('INSERT INTO dept_break_settings(tenant_id,department_id,type,daily_quota_minutes) VALUES(?,?,?,?) ON CONFLICT(tenant_id,department_id,type) DO UPDATE SET daily_quota_minutes=excluded.daily_quota_minutes');
+    for (const [type, vals] of Object.entries(data)) upsert.run(tid, deptId, type, vals.daily_quota_minutes);
+  } else {
+    const upsert = db.prepare('INSERT INTO break_settings(tenant_id,type,daily_quota_minutes) VALUES(?,?,?) ON CONFLICT(tenant_id,type) DO UPDATE SET daily_quota_minutes=excluded.daily_quota_minutes');
+    for (const [type, vals] of Object.entries(data)) upsert.run(tid, type, vals.daily_quota_minutes);
+  }
+  ok(res, { department_id: deptId });
 });
 
 app.put('/api/settings/shift-times', auth, (req, res) => {
   const tid = writeTenantId(req);
   if (!tid) return fail(res, 400, 'No tenant context');
   const body = req.body || {};
-  const upsert = db.prepare('INSERT INTO shifts(tenant_id,name,start_time,end_time) VALUES(?,?,?,?) ON CONFLICT(tenant_id,name) DO UPDATE SET start_time=excluded.start_time, end_time=excluded.end_time');
-  for (const [name, vals] of Object.entries(body)) upsert.run(tid, name, vals.start + ':00', vals.end + ':00');
-  ok(res, {});
+  const deptId = body._department_id ? +body._department_id : null;
+  const data = { ...body }; delete data._department_id;
+  if (deptId) {
+    const upsert = db.prepare('INSERT INTO dept_shifts(tenant_id,department_id,name,start_time,end_time) VALUES(?,?,?,?,?) ON CONFLICT(tenant_id,department_id,name) DO UPDATE SET start_time=excluded.start_time, end_time=excluded.end_time');
+    for (const [name, vals] of Object.entries(data)) upsert.run(tid, deptId, name, vals.start + ':00', vals.end + ':00');
+  } else {
+    const upsert = db.prepare('INSERT INTO shifts(tenant_id,name,start_time,end_time) VALUES(?,?,?,?) ON CONFLICT(tenant_id,name) DO UPDATE SET start_time=excluded.start_time, end_time=excluded.end_time');
+    for (const [name, vals] of Object.entries(data)) upsert.run(tid, name, vals.start + ':00', vals.end + ':00');
+  }
+  ok(res, { department_id: deptId });
+});
+
+// Delete dept override (back to tenant default)
+app.delete('/api/settings/dept-overrides/:deptId', auth, (req, res) => {
+  const tid = writeTenantId(req);
+  const deptId = +req.params.deptId;
+  if (!tid || !deptId) return fail(res, 400, 'tenant + dept required');
+  db.prepare('DELETE FROM dept_break_settings WHERE tenant_id = ? AND department_id = ?').run(tid, deptId);
+  db.prepare('DELETE FROM dept_shifts WHERE tenant_id = ? AND department_id = ?').run(tid, deptId);
+  ok(res, { department_id: deptId });
 });
 
 const KV_ROUTES = {
@@ -889,6 +916,25 @@ app.put('/api/settings/bot-config', auth, async (req, res) => {
   res.json({ success: true, status });
 });
 
+// ============ EFFECTIVE SETTINGS RESOLVERS ============
+// Resolution: dept-specific override → tenant default
+function getEffectiveBreakLimit(tenantId, departmentId, type) {
+  if (departmentId) {
+    const dept = db.prepare('SELECT daily_quota_minutes FROM dept_break_settings WHERE tenant_id = ? AND department_id = ? AND type = ?').get(tenantId, departmentId, type);
+    if (dept && dept.daily_quota_minutes != null) return dept.daily_quota_minutes;
+  }
+  const tenant = db.prepare('SELECT daily_quota_minutes FROM break_settings WHERE tenant_id = ? AND type = ?').get(tenantId, type);
+  return tenant?.daily_quota_minutes ?? 15;
+}
+
+function getEffectiveShiftTime(tenantId, departmentId, name) {
+  if (departmentId) {
+    const dept = db.prepare('SELECT start_time, end_time FROM dept_shifts WHERE tenant_id = ? AND department_id = ? AND name = ?').get(tenantId, departmentId, name);
+    if (dept && dept.start_time) return dept;
+  }
+  return db.prepare('SELECT start_time, end_time FROM shifts WHERE tenant_id = ? AND name = ?').get(tenantId, name) || {};
+}
+
 // ============ TELEGRAM MINI APP ============
 function normalizeIp(ip) {
   return String(ip || '').replace(/^::ffff:/, '').trim();
@@ -940,7 +986,12 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
   const sched = db.prepare('SELECT status, shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
 
   // Break quota usage hari ini per type (include break aktif sebagai elapsed)
-  const quotas = db.prepare('SELECT type, daily_quota_minutes FROM break_settings WHERE tenant_id = ?').all(req.staff.tenant_id);
+  // Effective quota = dept override → tenant default
+  const tenantQuotas = db.prepare('SELECT type, daily_quota_minutes FROM break_settings WHERE tenant_id = ?').all(req.staff.tenant_id);
+  const quotas = tenantQuotas.map((q) => ({
+    type: q.type,
+    daily_quota_minutes: getEffectiveBreakLimit(req.staff.tenant_id, req.staff.department_id, q.type),
+  }));
   const used = db.prepare(`
     SELECT type, COALESCE(SUM(
       CASE WHEN end_time IS NOT NULL THEN duration_minutes
@@ -1092,7 +1143,7 @@ function clockInImpl(req, res) {
   const effectiveShift = sched?.shift || req.staff.current_shift;
 
   const now = new Date();
-  const shiftRow = db.prepare('SELECT start_time FROM shifts WHERE tenant_id = ? AND name = ?').get(req.staff.tenant_id, effectiveShift);
+  const shiftRow = getEffectiveShiftTime(req.staff.tenant_id, req.staff.department_id, effectiveShift);
   const grace = +(getTenantSetting(req.staff.tenant_id, 'late_grace_minutes', 5));
   let lateMin = 0;
   if (shiftRow?.start_time) {
@@ -1145,8 +1196,7 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
   const att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
   if (!att) return fail(res, 400, 'Belum clock-in.');
   if (att.current_status !== 'working') return fail(res, 400, 'Sedang break, end dulu.');
-  const bs = db.prepare('SELECT daily_quota_minutes FROM break_settings WHERE tenant_id = ? AND type = ?').get(req.staff.tenant_id, type);
-  const dailyQuota = bs?.daily_quota_minutes || 15;
+  const dailyQuota = getEffectiveBreakLimit(req.staff.tenant_id, req.staff.department_id, type);
 
   // Cek kuota harian: total durasi break type ini hari ini tidak boleh melebihi daily_quota
   const used = db.prepare(`
