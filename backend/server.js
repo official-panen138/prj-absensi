@@ -765,9 +765,11 @@ app.post('/api/settings/workstations', auth, (req, res) => {
   if (!name) return fail(res, 400, 'name required');
   const tid = writeTenantId(req);
   if (!tid) return fail(res, 400, 'No tenant context');
-  const tok = crypto.randomBytes(6).toString('hex');
-  const r = db.prepare('INSERT INTO workstations(tenant_id,name,department,qr_token,is_active) VALUES(?,?,?,?,1)').run(tid, name, department || null, tok);
-  ok(res, { id: r.lastInsertRowid, qr_token: tok });
+  const tokWork = crypto.randomBytes(6).toString('hex');
+  const tokIn = crypto.randomBytes(6).toString('hex');
+  const tokOut = crypto.randomBytes(6).toString('hex');
+  const r = db.prepare('INSERT INTO workstations(tenant_id,name,department,qr_token,qr_token_in,qr_token_out,is_active) VALUES(?,?,?,?,?,?,1)').run(tid, name, department || null, tokWork, tokIn, tokOut);
+  ok(res, { id: r.lastInsertRowid, qr_token: tokWork, qr_token_in: tokIn, qr_token_out: tokOut });
 });
 app.put('/api/settings/workstations/:id/toggle', auth, (req, res) => {
   const id = +req.params.id;
@@ -911,11 +913,24 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
   });
 });
 
-// Helper: verify workstation QR token belongs to this tenant + active
-function findActiveWorkstation(tenantId, qrToken) {
+// Helper: cari workstation matching ANY token, return matched purpose
+function findWorkstationByAnyToken(tenantId, qrToken) {
   if (!qrToken) return null;
   const clean = String(qrToken).startsWith('WMS-') ? String(qrToken).slice(4) : String(qrToken);
-  return db.prepare('SELECT * FROM workstations WHERE tenant_id = ? AND qr_token = ? AND is_active = 1').get(tenantId, clean);
+  const ws = db.prepare(`
+    SELECT *,
+      CASE
+        WHEN qr_token_in = ? THEN 'in'
+        WHEN qr_token_out = ? THEN 'out'
+        WHEN qr_token = ? THEN 'work'
+        ELSE NULL
+      END AS matched
+    FROM workstations
+    WHERE tenant_id = ? AND is_active = 1
+      AND (qr_token_in = ? OR qr_token_out = ? OR qr_token = ?)
+    LIMIT 1
+  `).get(clean, clean, clean, tenantId, clean, clean, clean);
+  return ws;
 }
 
 app.post('/api/bot/clock-in-qr', tgAuth, (req, res) => {
@@ -925,11 +940,10 @@ app.post('/api/bot/clock-in-qr', tgAuth, (req, res) => {
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Clock-In.`);
   }
   const { qr_token } = req.body || {};
-  const ws = findActiveWorkstation(req.staff.tenant_id, qr_token);
+  const ws = findWorkstationByAnyToken(req.staff.tenant_id, qr_token);
   if (!ws) return fail(res, 400, 'QR Workstation tidak valid atau sudah nonaktif. Scan QR yang ada di kantor.');
-  // Forward ke handler clock-in (tanpa cek IP karena sudah dicek di sini)
-  req.body._wsId = ws.id;
-  return clockInHandler(req, res);
+  if (ws.matched === 'out') return fail(res, 400, 'QR ini untuk *PULANG KERJA*, bukan untuk Start. Cari QR yang berlabel "Start Kerja".');
+  return clockInImpl(req, res);
 });
 
 app.post('/api/bot/clock-out-qr', tgAuth, (req, res) => {
@@ -939,18 +953,11 @@ app.post('/api/bot/clock-out-qr', tgAuth, (req, res) => {
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Clock-Out.`);
   }
   const { qr_token } = req.body || {};
-  const ws = findActiveWorkstation(req.staff.tenant_id, qr_token);
+  const ws = findWorkstationByAnyToken(req.staff.tenant_id, qr_token);
   if (!ws) return fail(res, 400, 'QR Workstation tidak valid atau sudah nonaktif. Scan QR yang ada di kantor.');
-  req.body._wsId = ws.id;
-  return clockOutHandler(req, res);
-});
-
-function clockInHandler(req, res) {
-  return clockInImpl(req, res);
-}
-function clockOutHandler(req, res) {
+  if (ws.matched === 'in') return fail(res, 400, 'QR ini untuk *START KERJA*, bukan untuk Pulang. Cari QR yang berlabel "Pulang Kerja".');
   return clockOutImpl(req, res);
-}
+});
 
 app.post('/api/bot/clock-in', tgAuth, (req, res) => clockInImpl(req, res));
 

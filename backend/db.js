@@ -182,6 +182,18 @@ function migrateV2_MultiTenant() {
     console.log('[db] added ip_address_end to break_log');
   }
 
+  // workstations: tambah qr_token_in (Start Kerja) dan qr_token_out (Pulang Kerja)
+  if (!hasColumn('workstations', 'qr_token_in')) {
+    db.exec('ALTER TABLE workstations ADD COLUMN qr_token_in TEXT');
+    db.exec('UPDATE workstations SET qr_token_in = qr_token WHERE qr_token_in IS NULL');
+    console.log('[db] added qr_token_in to workstations + backfill from qr_token');
+  }
+  if (!hasColumn('workstations', 'qr_token_out')) {
+    db.exec('ALTER TABLE workstations ADD COLUMN qr_token_out TEXT');
+    db.exec('UPDATE workstations SET qr_token_out = qr_token WHERE qr_token_out IS NULL');
+    console.log('[db] added qr_token_out to workstations + backfill from qr_token');
+  }
+
   // Backfill: all existing rows (except super_admin users) get assigned to PanenGroup
   for (const t of ['staff', 'schedules', 'schedule_daily', 'attendance', 'break_log', 'swap_requests', 'workstations']) {
     const updated = db.prepare(`UPDATE ${t} SET tenant_id = ? WHERE tenant_id IS NULL`).run(defaultTenantId);

@@ -1,7 +1,25 @@
 import { useState, useEffect, useCallback } from 'react';
+import QRCode from 'qrcode';
 import { apiFetch } from '../lib/api';
 import { BREAK_TYPE_LABEL } from '../lib/theme';
 import { Card, Spinner, Toast, Btn, Badge, FormRow, SectionHeader } from '../components/ui';
+
+function QrPreview({ token, label, color }) {
+  const [dataUrl, setDataUrl] = useState('');
+  useEffect(() => {
+    if (!token) return;
+    QRCode.toDataURL('WMS-' + token, { width: 180, margin: 2, color: { dark: '#000000', light: '#ffffff' } })
+      .then(setDataUrl).catch(() => {});
+  }, [token]);
+  if (!token) return null;
+  return (
+    <div className="flex flex-col items-center bg-gray-900 rounded-lg p-3 border border-gray-700" style={{ minWidth: 180 }}>
+      <div className="text-[10px] font-bold uppercase tracking-wider mb-2" style={{ color }}>{label}</div>
+      {dataUrl ? <img src={dataUrl} alt={label} className="w-[180px] h-[180px] bg-white rounded-md" /> : <div className="w-[180px] h-[180px] bg-gray-800 rounded-md flex items-center justify-center"><Spinner /></div>}
+      <div className="text-[9px] text-gray-500 mt-2 font-mono break-all max-w-[180px] text-center">WMS-{token}</div>
+    </div>
+  );
+}
 
 const DEFAULT_BREAK_SETTINGS = { smoke: { daily_quota_minutes: 20 }, toilet: { daily_quota_minutes: 30 }, outside: { daily_quota_minutes: 10 } };
 const DEFAULT_SHIFT_TIMES = { morning: { start: '09:00', end: '21:00' }, middle: { start: '14:00', end: '02:00' }, night: { start: '21:00', end: '09:00' } };
@@ -351,31 +369,36 @@ export default function SettingsPage({ token, user }) {
             </div>
           )}
           {workstations.length === 0 && <div className="text-gray-500 text-xs py-3">Belum ada workstation. Tambahkan untuk generate QR code.</div>}
-          <div className="grid gap-2">
+          <div className="grid gap-3">
             {workstations.map((ws) => (
-              <div key={ws.id} className={`flex items-center justify-between px-3.5 py-2.5 bg-gray-800 rounded-lg border ${ws.is_active ? 'border-gray-700' : 'border-red-500/30'}`}>
-                <div className="flex-1">
-                  <div className="font-semibold text-[13px]">{ws.name} {!ws.is_active && <span className="text-red-400 text-[11px]">(inactive)</span>}</div>
-                  <div className="text-[11px] text-gray-500">{ws.department || '—'}</div>
-                  <div className="text-[10px] text-emerald-400 font-mono mt-0.5">QR: WMS-{ws.qr_token}</div>
-                </div>
-                {isAdmin && (
-                  <div className="flex gap-1.5">
-                    <Btn size="sm" variant="ghost" onClick={() => { const val = 'WMS-' + ws.qr_token; navigator.clipboard?.writeText(val); setToast({ type: 'ok', text: `QR value copied: ${val}` }); }}>📋</Btn>
-                    <Btn size="sm" variant="ghost" onClick={async () => {
-                      setSaving((s) => ({ ...s, ['ws' + ws.id]: true }));
-                      try { await apiFetch(token, `/settings/workstations/${ws.id}/toggle`, { method: 'PUT' }); fetchSettings(); } catch (e) { setToast({ type: 'error', text: e.message }); } finally { setSaving((s) => ({ ...s, ['ws' + ws.id]: false })); }
-                    }}>{ws.is_active ? '⏸' : '▶'}</Btn>
-                    <Btn size="sm" variant="danger" onClick={async () => {
-                      if (!window.confirm('Delete workstation ' + ws.name + '?')) return;
-                      try { await apiFetch(token, `/settings/workstations/${ws.id}`, { method: 'DELETE' }); setToast({ type: 'ok', text: 'Deleted.' }); fetchSettings(); } catch (e) { setToast({ type: 'error', text: e.message }); }
-                    }}>🗑</Btn>
+              <div key={ws.id} className={`bg-gray-800 rounded-lg border ${ws.is_active ? 'border-gray-700' : 'border-red-500/30'} overflow-hidden`}>
+                <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-gray-700/50">
+                  <div className="flex-1">
+                    <div className="font-semibold text-sm">{ws.name} {!ws.is_active && <span className="text-red-400 text-[11px]">(inactive)</span>}</div>
+                    <div className="text-[11px] text-gray-500">{ws.department || '—'}</div>
                   </div>
-                )}
+                  {isAdmin && (
+                    <div className="flex gap-1.5">
+                      <Btn size="sm" variant="ghost" onClick={async () => {
+                        setSaving((s) => ({ ...s, ['ws' + ws.id]: true }));
+                        try { await apiFetch(token, `/settings/workstations/${ws.id}/toggle`, { method: 'PUT' }); fetchSettings(); } catch (e) { setToast({ type: 'error', text: e.message }); } finally { setSaving((s) => ({ ...s, ['ws' + ws.id]: false })); }
+                      }}>{ws.is_active ? '⏸' : '▶'}</Btn>
+                      <Btn size="sm" variant="danger" onClick={async () => {
+                        if (!window.confirm('Delete workstation ' + ws.name + '?')) return;
+                        try { await apiFetch(token, `/settings/workstations/${ws.id}`, { method: 'DELETE' }); setToast({ type: 'ok', text: 'Deleted.' }); fetchSettings(); } catch (e) { setToast({ type: 'error', text: e.message }); }
+                      }}>🗑</Btn>
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-3 p-3 justify-around">
+                  <QrPreview token={ws.qr_token_in || ws.qr_token} label="📥 START KERJA" color="#34d399" />
+                  <QrPreview token={ws.qr_token_out || ws.qr_token} label="📤 PULANG KERJA" color="#f87171" />
+                  <QrPreview token={ws.qr_token} label="🔄 BACK TO WORK" color="#fbbf24" />
+                </div>
               </div>
             ))}
           </div>
-          {workstations.length > 0 && <div className="mt-3 text-[11px] text-gray-500">Gunakan nilai QR (WMS-xxxxx) untuk dicetak sebagai QR code. Staff scan QR ini dengan Telegram saat kembali dari break.</div>}
+          {workstations.length > 0 && <div className="mt-3 text-[11px] text-gray-500">Cetak masing-masing QR dengan label yang sesuai. Tempel QR Start di pintu masuk, QR Pulang di pintu keluar, dan QR Back to Work di area break.</div>}
         </div>
       </Card>
     </div>
