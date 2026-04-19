@@ -43,6 +43,7 @@ export default function SettingsPage({ token, user }) {
   const [showPin, setShowPin] = useState(false);
   const [botForm, setBotForm] = useState({ bot_token: '', monitor_group_chat_id: '', miniapp_url: '' });
   const [motivForm, setMotivForm] = useState({ start: '', end: '' });
+  const [swapModes, setSwapModes] = useState({ sick: true, move_off: true, trade: true });
   const [departments, setDepartments] = useState([]);
   const [breakDeptId, setBreakDeptId] = useState(''); // '' = tenant default
   const [shiftDeptId, setShiftDeptId] = useState('');
@@ -116,6 +117,14 @@ export default function SettingsPage({ token, user }) {
         setMotivForm({
           start: (mq.start || []).join('\n'),
           end: (mq.end || []).join('\n'),
+        });
+      }
+      const sm = s.swap_modes_enabled?.value;
+      if (sm && typeof sm === 'object') {
+        setSwapModes({
+          sick: sm.sick !== false,
+          move_off: sm.move_off !== false,
+          trade: sm.trade !== false,
         });
       }
       try { const bs = await apiFetch(token, '/bot/status'); setBotStatus(bs.data || null); } catch (e) {}
@@ -375,6 +384,42 @@ export default function SettingsPage({ token, user }) {
         </div>
         <div className="mt-3 text-[11px] text-gray-500">
           {motivForm.start.split('\n').filter((s) => s.trim()).length} start · {motivForm.end.split('\n').filter((s) => s.trim()).length} end quotes
+        </div>
+      </Card>
+
+      {/* Swap Request Modes */}
+      <Card className="p-5 mb-4">
+        <SectionHeader title="🔄 Swap Request Modes" actions={isAdmin && (
+          <Btn size="sm" onClick={() => save('swap_modes', '/settings/swap-modes', swapModes)} disabled={saving.swap_modes}>
+            {saving.swap_modes ? <Spinner /> : '💾 Save Modes'}
+          </Btn>
+        )} />
+        <div className="text-xs text-gray-500 mb-3.5">
+          Aktif/nonaktifkan tipe pengajuan yang muncul di Mini App staff. Nonaktif = tombol disembunyikan & request ditolak server.
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {[
+            { key: 'sick', label: '🤒 Izin Sakit', desc: 'Skip 1 hari kerja karena sakit' },
+            { key: 'move_off', label: '🔄 Tukar Off Day', desc: 'Pindah hari libur ke tanggal lain' },
+            { key: 'trade', label: '🤝 Trade Shift', desc: 'Tukar shift dengan staff lain' },
+          ].map((m) => (
+            <label key={m.key} className={`flex items-start gap-3 p-3.5 rounded-lg border cursor-pointer transition-colors ${swapModes[m.key] ? 'bg-emerald-500/10 border-emerald-500/40' : 'bg-gray-800 border-gray-700'} ${!isAdmin ? 'opacity-60 cursor-not-allowed' : 'hover:border-emerald-500/60'}`}>
+              <input
+                type="checkbox"
+                checked={swapModes[m.key]}
+                disabled={!isAdmin}
+                onChange={(e) => setSwapModes((s) => ({ ...s, [m.key]: e.target.checked }))}
+                className="mt-0.5 w-4 h-4 accent-emerald-500"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="font-bold text-[13px] text-gray-100">{m.label}</div>
+                <div className="text-[11px] text-gray-500 mt-0.5">{m.desc}</div>
+                <div className={`text-[10px] font-semibold mt-1 uppercase tracking-wider ${swapModes[m.key] ? 'text-emerald-400' : 'text-gray-500'}`}>
+                  {swapModes[m.key] ? '● Aktif' : '○ Nonaktif'}
+                </div>
+              </div>
+            </label>
+          ))}
         </div>
       </Card>
 

@@ -889,6 +889,11 @@ const KV_ROUTES = {
     start: Array.isArray(body.start) ? body.start.map((s) => String(s).trim()).filter(Boolean) : [],
     end: Array.isArray(body.end) ? body.end.map((s) => String(s).trim()).filter(Boolean) : [],
   }],
+  '/api/settings/swap-modes': (body) => ['swap_modes_enabled', {
+    sick: body.sick !== false,
+    move_off: body.move_off !== false,
+    trade: body.trade !== false,
+  }],
 };
 for (const [p, fn] of Object.entries(KV_ROUTES)) {
   app.put(p, auth, (req, res) => {
@@ -1063,6 +1068,8 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
   // Today's effective shift: from schedule_daily if exists, else staff default
   const todayShift = sched?.shift || req.staff.current_shift;
 
+  const swapModes = getTenantSetting(req.staff.tenant_id, 'swap_modes_enabled', null) || { sick: true, move_off: true, trade: true };
+
   res.json({
     success: true,
     staff: {
@@ -1078,6 +1085,7 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
     ip_allowed: ipAllowed,
     client_ip: clientIp,
     motivation_quotes: motivationQuotes,
+    swap_modes_enabled: swapModes,
   });
 });
 
@@ -1129,6 +1137,12 @@ app.post('/api/bot/swap-request', tgAuth, (req, res) => {
   const { swap_type, target_date, reason, target_staff_id, partner_date } = req.body || {};
   const type = ['trade', 'move_off', 'sick'].includes(swap_type) ? swap_type : null;
   if (!type) return fail(res, 400, 'swap_type harus salah satu: trade, move_off, sick');
+  // Cek apakah mode ini aktif di tenant settings
+  const modes = getTenantSetting(req.staff.tenant_id, 'swap_modes_enabled', null) || { sick: true, move_off: true, trade: true };
+  if (modes[type] === false) {
+    const labels = { sick: 'Izin Sakit', move_off: 'Tukar Off Day', trade: 'Trade Shift' };
+    return fail(res, 403, `Fitur ${labels[type]} sedang dinonaktifkan oleh admin.`);
+  }
   if (!target_date) return fail(res, 400, 'Tanggal diperlukan');
 
   const targetSched = db.prepare('SELECT shift, status FROM schedule_daily WHERE staff_id = ? AND date = ?').get(req.staff.id, target_date);

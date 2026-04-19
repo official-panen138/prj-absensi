@@ -388,21 +388,35 @@ export default function MiniApp() {
         >
           🔄 {showSwap ? 'Tutup' : 'Request Swap / Off'}
         </button>
-        {showSwap && (
+        {showSwap && (() => {
+          const modes = me?.swap_modes_enabled || { sick: true, move_off: true, trade: true };
+          const enabledList = ['sick', 'move_off', 'trade'].filter((m) => modes[m]);
+          // Auto-pilih mode aktif kalau current swapForm.type tidak aktif
+          if (enabledList.length && !modes[swapForm.type]) {
+            setTimeout(() => setSwapForm((f) => ({ ...f, type: enabledList[0] })), 0);
+          }
+          if (enabledList.length === 0) {
+            return (
+              <div style={{marginTop:12,padding:14,background:'rgb(31 41 55)',borderRadius:12,border:'1px solid rgba(239,68,68,0.3)',color:'#fca5a5',fontSize:13,textAlign:'center'}}>
+                ⚠ Semua fitur swap request sedang dinonaktifkan oleh admin.
+              </div>
+            );
+          }
+          return (
           <div style={{marginTop:12,padding:14,background:'rgb(31 41 55)',borderRadius:12,border:'1px solid rgb(55 65 81)'}}>
             <div style={{display:'flex',gap:6,marginBottom:12}}>
-              <button onClick={() => setSwapForm((f) => ({ ...f, type: 'sick' }))}
+              {modes.sick && <button onClick={() => setSwapForm((f) => ({ ...f, type: 'sick' }))}
                 style={{flex:1,padding:'8px 4px',borderRadius:8,border:'none',cursor:'pointer',
                   background: swapForm.type === 'sick' ? '#d97706' : '#374151',
-                  color:'#fff',fontSize:11,fontWeight:600}}>🤒 Izin Sakit</button>
-              <button onClick={() => setSwapForm((f) => ({ ...f, type: 'move_off' }))}
+                  color:'#fff',fontSize:11,fontWeight:600}}>🤒 Izin Sakit</button>}
+              {modes.move_off && <button onClick={() => setSwapForm((f) => ({ ...f, type: 'move_off' }))}
                 style={{flex:1,padding:'8px 4px',borderRadius:8,border:'none',cursor:'pointer',
                   background: swapForm.type === 'move_off' ? '#dc2626' : '#374151',
-                  color:'#fff',fontSize:11,fontWeight:600}}>🔁 Tukar Off</button>
-              <button onClick={() => setSwapForm((f) => ({ ...f, type: 'trade' }))}
+                  color:'#fff',fontSize:11,fontWeight:600}}>🔁 Tukar Off</button>}
+              {modes.trade && <button onClick={() => setSwapForm((f) => ({ ...f, type: 'trade' }))}
                 style={{flex:1,padding:'8px 4px',borderRadius:8,border:'none',cursor:'pointer',
                   background: swapForm.type === 'trade' ? '#2563eb' : '#374151',
-                  color:'#fff',fontSize:11,fontWeight:600}}>🔄 Trade Shift</button>
+                  color:'#fff',fontSize:11,fontWeight:600}}>🔄 Trade Shift</button>}
             </div>
 
             {swapForm.type === 'sick' && (
@@ -494,7 +508,8 @@ export default function MiniApp() {
               📤 Submit {swapForm.type === 'sick' ? 'Izin Sakit' : swapForm.type === 'move_off' ? 'Tukar Off Day' : 'Trade Shift'}
             </Btn>
           </div>
-        )}
+          );
+        })()}
       </div>
 
       <div style={{textAlign:'center',marginTop:24,fontSize:10,color:'#4b5563',fontFamily:'monospace'}}>
