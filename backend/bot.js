@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import QRCode from 'qrcode';
 import { db, getTenantSetting, getDefaultTenantId } from './db.js';
 import { emitLiveUpdate } from './events.js';
+import { renderSickPair, renderMoveOffPair, renderTradePair } from './scheduleSnapshot.js';
 
 const DEPARTMENTS = ['Customer Service', 'Finance', 'Captain', 'SEO Marketing', 'Social Media Marketing', 'CRM', 'Telemarketing'];
 const CATEGORIES = [{ key: 'indonesian', label: 'Indonesian' }, { key: 'local', label: 'Cambodian' }];
@@ -548,14 +549,33 @@ export async function notifySwapRequest(tenantId, requester, partner, targetDate
     .text('❌ Reject', `swap_reject_${swapId}`);
   try {
     await entry.bot.api.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: kb });
-    // Snapshot jadwal — untuk sick & move_off (trade biasanya admin sudah tahu)
-    if (swapType === 'sick' || swapType === 'move_off') {
-      const marked = swapType === 'move_off' ? [targetDate, partnerDate].filter(Boolean) : [targetDate];
-      const snap = formatScheduleSnapshot(requester.department_id, requester.id, marked);
-      if (snap) {
-        try { await entry.bot.api.sendMessage(chatId, snap, { parse_mode: 'Markdown' }); }
-        catch (e) { console.warn('[bot] snapshot send failed:', e.message); }
+
+    // Visual schedule preview: BEFORE + AFTER
+    const deptName = requester.department || 'Schedule';
+    let pair = null;
+    try {
+      if (swapType === 'sick') {
+        pair = await renderSickPair(requester.department_id, requester.id, targetDate, deptName);
+      } else if (swapType === 'move_off') {
+        pair = await renderMoveOffPair(requester.department_id, requester.id, targetDate, partnerDate, requester.current_shift, deptName);
+      } else if (swapType === 'trade' && partner) {
+        pair = await renderTradePair(requester.department_id, requester.id, partner.id, targetDate, partnerDate || targetDate, deptName);
       }
+    } catch (e) { console.warn('[bot] render schedule preview:', e.message); }
+
+    if (pair?.before) {
+      try { await entry.bot.api.sendPhoto(chatId, new InputFile(pair.before, 'before.png'), { caption: '📋 *Sebelum* (kondisi sekarang)', parse_mode: 'Markdown' }); }
+      catch (e) { console.warn('[bot] before send failed:', e.message); }
+    }
+    if (pair?.after) {
+      try { await entry.bot.api.sendPhoto(chatId, new InputFile(pair.after, 'after.png'), { caption: '✅ *Setelah approve* (preview hasil)', parse_mode: 'Markdown' }); }
+      catch (e) { console.warn('[bot] after send failed:', e.message); }
+    }
+    if (pair?.beforeWk2) {
+      try { await entry.bot.api.sendPhoto(chatId, new InputFile(pair.beforeWk2, 'before2.png'), { caption: '📋 *Sebelum* (minggu lain)', parse_mode: 'Markdown' }); } catch {}
+    }
+    if (pair?.afterWk2) {
+      try { await entry.bot.api.sendPhoto(chatId, new InputFile(pair.afterWk2, 'after2.png'), { caption: '✅ *Setelah approve* (minggu lain)', parse_mode: 'Markdown' }); } catch {}
     }
   } catch (e) { console.warn('[bot] notifySwapRequest failed:', e.message); }
 }

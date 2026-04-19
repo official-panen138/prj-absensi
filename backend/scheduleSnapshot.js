@@ -1,0 +1,190 @@
+import sharp from 'sharp';
+import { db } from './db.js';
+
+const ESC = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+const COLOR = {
+  bg: '#0f172a',
+  panel: '#1f2937',
+  border: '#374151',
+  text: '#f3f4f6',
+  textMuted: '#9ca3af',
+  accent: '#34d399',
+  weekend: '#fb7185',
+  morning: { fill: '#10b981', text: '#fff' },
+  middle:  { fill: '#3b82f6', text: '#fff' },
+  night:   { fill: '#8b5cf6', text: '#fff' },
+  off:     { fill: '#dc2626', text: '#fff' },
+  sick:    { fill: '#d97706', text: '#fff' },
+  leave:   { fill: '#0ea5e9', text: '#fff' },
+  empty:   { fill: '#1f2937', text: '#6b7280' },
+  marked:  { stroke: '#fbbf24', width: 3 },
+};
+
+function cellStyle(sd) {
+  if (!sd) return { ...COLOR.empty, label: '·' };
+  if (sd.status === 'work') {
+    const c = sd.shift === 'middle' ? COLOR.middle : sd.shift === 'night' ? COLOR.night : COLOR.morning;
+    return { ...c, label: sd.shift === 'morning' ? 'M' : sd.shift === 'middle' ? 'D' : 'N' };
+  }
+  if (sd.status === 'off') return { ...COLOR.off, label: 'OFF' };
+  if (sd.status === 'sick') return { ...COLOR.sick, label: 'SCK' };
+  if (sd.status === 'leave') return { ...COLOR.leave, label: 'LV' };
+  return { ...COLOR.empty, label: '?' };
+}
+
+function getWeekDates(focusDate) {
+  const focus = new Date(focusDate + 'T00:00:00');
+  const dow = focus.getDay();
+  const offsetToMonday = (dow + 6) % 7;
+  const monday = new Date(focus);
+  monday.setDate(focus.getDate() - offsetToMonday);
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    return d.toISOString().slice(0, 10);
+  });
+}
+
+function fetchScheduleData(deptId, requesterId, focusDate) {
+  const dates = getWeekDates(focusDate);
+  const staff = deptId
+    ? db.prepare('SELECT id, name FROM staff WHERE department_id = ? AND is_active = 1 AND is_approved = 1 ORDER BY (id = ?) DESC, name').all(deptId, requesterId)
+    : db.prepare('SELECT id, name FROM staff WHERE id = ?').all(requesterId);
+  const sIds = staff.map((s) => s.id);
+  if (!sIds.length) return { staff: [], dates, sched: {} };
+  const sPlace = sIds.map(() => '?').join(',');
+  const dPlace = dates.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT staff_id, date, status, shift FROM schedule_daily WHERE staff_id IN (${sPlace}) AND date IN (${dPlace})`).all(...sIds, ...dates);
+  const sched = {};
+  rows.forEach((r) => { sched[`${r.staff_id}_${r.date}`] = r; });
+  return { staff, dates, sched };
+}
+
+function renderSvg({ staff, dates, sched, marked, title, requesterId }) {
+  const cellW = 56, cellH = 36, nameW = 180;
+  const headerH = 70, footerH = 36;
+  const W = nameW + cellW * dates.length + 20;
+  const H = headerH + cellH * staff.length + footerH + 20;
+  const dayLabels = ['Sn', 'Sl', 'Rb', 'Km', 'Jm', 'Sb', 'Mg'];
+
+  const parts = [`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`];
+  parts.push(`<rect width="100%" height="100%" fill="${COLOR.bg}"/>`);
+  // Title
+  parts.push(`<text x="10" y="24" fill="${COLOR.accent}" font-size="14" font-weight="bold" font-family="monospace">${ESC(title)}</text>`);
+  // Date headers
+  dates.forEach((d, i) => {
+    const x = nameW + i * cellW + cellW / 2;
+    const isWeekend = i === 5 || i === 6;
+    parts.push(`<text x="${x}" y="${44}" fill="${isWeekend ? COLOR.weekend : COLOR.textMuted}" font-size="10" text-anchor="middle" font-family="monospace">${dayLabels[i]}</text>`);
+    parts.push(`<text x="${x}" y="${60}" fill="${isWeekend ? COLOR.weekend : COLOR.text}" font-size="11" text-anchor="middle" font-family="monospace" font-weight="bold">${d.slice(8, 10)}</text>`);
+  });
+  // Rows
+  staff.forEach((s, ri) => {
+    const y = headerH + ri * cellH;
+    const isReq = s.id === requesterId;
+    // Name
+    if (isReq) {
+      parts.push(`<rect x="0" y="${y}" width="${nameW}" height="${cellH}" fill="${COLOR.panel}"/>`);
+    }
+    parts.push(`<text x="10" y="${y + cellH / 2 + 4}" fill="${isReq ? COLOR.accent : COLOR.text}" font-size="12" font-weight="${isReq ? 'bold' : 'normal'}">${ESC(isReq ? '▶ ' : '')}${ESC(s.name.slice(0, 22))}</text>`);
+    dates.forEach((d, ci) => {
+      const cellX = nameW + ci * cellW;
+      const sd = sched[`${s.id}_${d}`];
+      const style = cellStyle(sd);
+      const isMarked = marked && marked[s.id] && marked[s.id].includes(d);
+      parts.push(`<rect x="${cellX + 2}" y="${y + 2}" width="${cellW - 4}" height="${cellH - 4}" fill="${style.fill}" rx="4" stroke="${isMarked ? COLOR.marked.stroke : 'none'}" stroke-width="${isMarked ? COLOR.marked.width : 0}"/>`);
+      parts.push(`<text x="${cellX + cellW / 2}" y="${y + cellH / 2 + 5}" fill="${style.text}" font-size="13" font-weight="bold" text-anchor="middle" font-family="monospace">${ESC(style.label)}</text>`);
+    });
+  });
+  // Footer legend
+  const fy = headerH + staff.length * cellH + 20;
+  parts.push(`<text x="10" y="${fy}" fill="${COLOR.textMuted}" font-size="10" font-family="monospace">M=Morning · D=Middle · N=Night · OFF=Off · SCK=Sick · LV=Leave · ▶=requester · □=terdampak</text>`);
+  parts.push(`</svg>`);
+  return parts.join('');
+}
+
+function applySickPreview(sched, requesterId, date) {
+  const next = { ...sched };
+  const key = `${requesterId}_${date}`;
+  next[key] = { ...(next[key] || {}), status: 'sick', shift: next[key]?.shift || 'morning', staff_id: requesterId, date };
+  return next;
+}
+
+function applyMoveOffPreview(sched, requesterId, originalOffDate, newOffDate, fallbackShift) {
+  const next = { ...sched };
+  const k1 = `${requesterId}_${originalOffDate}`;
+  const k2 = `${requesterId}_${newOffDate}`;
+  const orig = next[k1] || { staff_id: requesterId, date: originalOffDate };
+  const newRow = next[k2] || { staff_id: requesterId, date: newOffDate };
+  next[k1] = { ...orig, status: 'work', shift: fallbackShift || 'morning' };
+  next[k2] = { ...newRow, status: 'off' };
+  return next;
+}
+
+function applyTradePreview(sched, reqId, partnerId, reqDate, partnerDate) {
+  const next = { ...sched };
+  const k1 = `${reqId}_${reqDate}`;
+  const k2 = `${partnerId}_${partnerDate}`;
+  const a = next[k1];
+  const b = next[k2];
+  if (!a || !b) return next;
+  next[k1] = { ...a, shift: b.shift };
+  next[k2] = { ...b, shift: a.shift };
+  return next;
+}
+
+async function svgToPng(svg) {
+  return await sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+// Build PNG buffer untuk before/after sick request
+export async function renderSickPair(deptId, requesterId, date, deptName) {
+  const { staff, dates, sched } = fetchScheduleData(deptId, requesterId, date);
+  if (!staff.length) return { before: null, after: null };
+  const marked = { [requesterId]: [date] };
+  const before = await svgToPng(renderSvg({ staff, dates, sched, marked, title: `BEFORE — ${deptName || 'Schedule'} (week ${dates[0]})`, requesterId }));
+  const afterSched = applySickPreview(sched, requesterId, date);
+  const after = await svgToPng(renderSvg({ staff, dates, sched: afterSched, marked, title: `AFTER — Sick on ${date}`, requesterId }));
+  return { before, after };
+}
+
+export async function renderMoveOffPair(deptId, requesterId, originalDate, newDate, fallbackShift, deptName) {
+  // Pakai range yang berisi kedua tanggal
+  const dates1 = getWeekDates(originalDate);
+  const dates2 = getWeekDates(newDate);
+  // Kalau beda minggu, render dengan range gabungan minimal — pilih week dari originalDate untuk konsistensi
+  const focusDate = originalDate <= newDate ? originalDate : newDate;
+  const { staff, dates, sched } = fetchScheduleData(deptId, requesterId, focusDate);
+  if (!staff.length) return { before: null, after: null };
+  const marked = { [requesterId]: [originalDate, newDate].filter((d) => dates.includes(d)) };
+  const before = await svgToPng(renderSvg({ staff, dates, sched, marked, title: `BEFORE — ${deptName || 'Schedule'} (week ${dates[0]})`, requesterId }));
+  const afterSched = applyMoveOffPreview(sched, requesterId, originalDate, newDate, fallbackShift);
+  const after = await svgToPng(renderSvg({ staff, dates, sched: afterSched, marked, title: `AFTER — Move off ${originalDate} → ${newDate}`, requesterId }));
+  // Kalau tanggal beda minggu, render minggu kedua juga
+  let beforeWk2 = null, afterWk2 = null;
+  if (dates1[0] !== dates2[0]) {
+    const d2 = fetchScheduleData(deptId, requesterId, originalDate <= newDate ? newDate : originalDate);
+    if (d2.staff.length) {
+      const marked2 = { [requesterId]: [originalDate, newDate].filter((d) => d2.dates.includes(d)) };
+      beforeWk2 = await svgToPng(renderSvg({ staff: d2.staff, dates: d2.dates, sched: d2.sched, marked: marked2, title: `BEFORE — week ${d2.dates[0]}`, requesterId }));
+      const afterSched2 = applyMoveOffPreview(d2.sched, requesterId, originalDate, newDate, fallbackShift);
+      afterWk2 = await svgToPng(renderSvg({ staff: d2.staff, dates: d2.dates, sched: afterSched2, marked: marked2, title: `AFTER — week ${d2.dates[0]}`, requesterId }));
+    }
+  }
+  return { before, after, beforeWk2, afterWk2 };
+}
+
+export async function renderTradePair(deptId, requesterId, partnerId, reqDate, partnerDate, deptName) {
+  const focusDate = reqDate <= partnerDate ? reqDate : partnerDate;
+  const { staff, dates, sched } = fetchScheduleData(deptId, requesterId, focusDate);
+  if (!staff.length) return { before: null, after: null };
+  const marked = {
+    [requesterId]: [reqDate].filter((d) => dates.includes(d)),
+    [partnerId]: [partnerDate].filter((d) => dates.includes(d)),
+  };
+  const before = await svgToPng(renderSvg({ staff, dates, sched, marked, title: `BEFORE — ${deptName || 'Schedule'} (week ${dates[0]})`, requesterId }));
+  const afterSched = applyTradePreview(sched, requesterId, partnerId, reqDate, partnerDate);
+  const after = await svgToPng(renderSvg({ staff, dates, sched: afterSched, marked, title: `AFTER — Trade ${reqDate} ↔ ${partnerDate}`, requesterId }));
+  return { before, after };
+}
