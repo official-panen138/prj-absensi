@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { db, getSetting, setSetting, getDefaultTenantId, getTenantSetting, setTenantSetting } from './db.js';
-import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest } from './bot.js';
+import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest, pushSwapResultSnapshot } from './bot.js';
 import { liveBus, emitLiveUpdate } from './events.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -684,6 +684,7 @@ app.put('/api/swap/:id/approve', auth, (req, res) => {
   if (apply.error) return fail(res, 400, apply.error);
   db.prepare('UPDATE swap_requests SET status = ? WHERE id = ?').run('approved', id);
   emitLiveUpdate(sw.tenant_id, 'swap_approved', { swap_id: id });
+  pushSwapResultSnapshot(sw.tenant_id, sw).catch(() => {});
   ok(res, { id });
 });
 app.put('/api/swap/:id/reject', auth, (req, res) => {

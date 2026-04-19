@@ -148,6 +148,28 @@ async function svgToPng(svg) {
   return await sharp(Buffer.from(svg)).png().toBuffer();
 }
 
+// Snapshot dari DB state SEKARANG (tanpa preview hypothetical).
+// Dipakai untuk send "AFTER APPROVE" image setelah perubahan sudah committed.
+export async function renderSnapshot(deptId, requesterId, markedDates, title) {
+  const focusDate = markedDates?.[0];
+  if (!focusDate) return null;
+  const { staff, dates, sched } = fetchScheduleData(deptId, requesterId, focusDate);
+  if (!staff.length) return null;
+  const marked = { [requesterId]: markedDates.filter((d) => dates.includes(d)) };
+  return await svgToPng(renderSvg({ staff, dates, sched, marked, title, requesterId }));
+}
+
+export async function renderSnapshotMulti(deptId, requesterId, markedMap, title, focusDate) {
+  if (!focusDate) return null;
+  const { staff, dates, sched } = fetchScheduleData(deptId, requesterId, focusDate);
+  if (!staff.length) return null;
+  const marked = {};
+  Object.entries(markedMap || {}).forEach(([sid, dts]) => {
+    marked[sid] = (dts || []).filter((d) => dates.includes(d));
+  });
+  return await svgToPng(renderSvg({ staff, dates, sched, marked, title, requesterId }));
+}
+
 // Build PNG buffer untuk before/after sick request
 export async function renderSickPair(deptId, requesterId, date, deptName) {
   const { staff, dates, sched } = fetchScheduleData(deptId, requesterId, date);

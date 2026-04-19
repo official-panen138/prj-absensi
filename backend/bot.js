@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import QRCode from 'qrcode';
 import { db, getTenantSetting, getDefaultTenantId } from './db.js';
 import { emitLiveUpdate } from './events.js';
-import { renderSickPair, renderMoveOffPair, renderTradePair } from './scheduleSnapshot.js';
+import { renderSickPair, renderMoveOffPair, renderTradePair, renderSnapshot, renderSnapshotMulti } from './scheduleSnapshot.js';
 
 const DEPARTMENTS = ['Customer Service', 'Finance', 'Captain', 'SEO Marketing', 'Social Media Marketing', 'CRM', 'Telemarketing'];
 const CATEGORIES = [{ key: 'indonesian', label: 'Indonesian' }, { key: 'local', label: 'Cambodian' }];
@@ -233,6 +233,8 @@ function attachHandlers(bot, tenantId) {
     const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
     await ctx.editMessageText(`✅ *APPROVED*\n_oleh ${by}_`, { parse_mode: 'Markdown' });
     await ctx.answerCallbackQuery({ text: '✅ Approved!' });
+    // Kirim snapshot AFTER ke monitor group (state sudah ter-update di DB)
+    pushSwapResultSnapshot(tenantId, sw).catch(() => {});
   });
 
   bot.callbackQuery(/^swap_reject_(\d+)$/, async (ctx) => {
@@ -550,34 +552,63 @@ export async function notifySwapRequest(tenantId, requester, partner, targetDate
   try {
     await entry.bot.api.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: kb });
 
-    // Visual schedule preview: BEFORE + AFTER
+    // Snapshot BEFORE (kondisi sekarang) — preview untuk admin sebelum approve
     const deptName = requester.department || 'Schedule';
-    let pair = null;
     try {
       if (swapType === 'sick') {
-        pair = await renderSickPair(requester.department_id, requester.id, targetDate, deptName);
+        const pair = await renderSickPair(requester.department_id, requester.id, targetDate, deptName);
+        if (pair?.before) await entry.bot.api.sendPhoto(chatId, new InputFile(pair.before, 'before.png'), { caption: '📋 *Jadwal saat ini* (kondisi sekarang)', parse_mode: 'Markdown' });
       } else if (swapType === 'move_off') {
-        pair = await renderMoveOffPair(requester.department_id, requester.id, targetDate, partnerDate, requester.current_shift, deptName);
+        const pair = await renderMoveOffPair(requester.department_id, requester.id, targetDate, partnerDate, requester.current_shift, deptName);
+        if (pair?.before) await entry.bot.api.sendPhoto(chatId, new InputFile(pair.before, 'before.png'), { caption: '📋 *Jadwal saat ini* (kondisi sekarang)', parse_mode: 'Markdown' });
+        if (pair?.beforeWk2) await entry.bot.api.sendPhoto(chatId, new InputFile(pair.beforeWk2, 'before2.png'), { caption: '📋 *Jadwal saat ini* (bulan kedua)', parse_mode: 'Markdown' });
       } else if (swapType === 'trade' && partner) {
-        pair = await renderTradePair(requester.department_id, requester.id, partner.id, targetDate, partnerDate || targetDate, deptName);
+        const pair = await renderTradePair(requester.department_id, requester.id, partner.id, targetDate, partnerDate || targetDate, deptName);
+        if (pair?.before) await entry.bot.api.sendPhoto(chatId, new InputFile(pair.before, 'before.png'), { caption: '📋 *Jadwal saat ini* (kondisi sekarang)', parse_mode: 'Markdown' });
       }
-    } catch (e) { console.warn('[bot] render schedule preview:', e.message); }
-
-    if (pair?.before) {
-      try { await entry.bot.api.sendPhoto(chatId, new InputFile(pair.before, 'before.png'), { caption: '📋 *Sebelum* (kondisi sekarang)', parse_mode: 'Markdown' }); }
-      catch (e) { console.warn('[bot] before send failed:', e.message); }
-    }
-    if (pair?.after) {
-      try { await entry.bot.api.sendPhoto(chatId, new InputFile(pair.after, 'after.png'), { caption: '✅ *Setelah approve* (preview hasil)', parse_mode: 'Markdown' }); }
-      catch (e) { console.warn('[bot] after send failed:', e.message); }
-    }
-    if (pair?.beforeWk2) {
-      try { await entry.bot.api.sendPhoto(chatId, new InputFile(pair.beforeWk2, 'before2.png'), { caption: '📋 *Sebelum* (minggu lain)', parse_mode: 'Markdown' }); } catch {}
-    }
-    if (pair?.afterWk2) {
-      try { await entry.bot.api.sendPhoto(chatId, new InputFile(pair.afterWk2, 'after2.png'), { caption: '✅ *Setelah approve* (minggu lain)', parse_mode: 'Markdown' }); } catch {}
-    }
+    } catch (e) { console.warn('[bot] render BEFORE snapshot:', e.message); }
   } catch (e) { console.warn('[bot] notifySwapRequest failed:', e.message); }
+}
+
+// Dipanggil SETELAH swap di-approve. Render snapshot dari DB state sekarang
+// (yang sudah ter-update) lalu kirim ke monitor group dengan caption "Setelah approve".
+export async function pushSwapResultSnapshot(tenantId, sw) {
+  const entry = runningBots.get(tenantId);
+  if (!entry) return;
+  const requester = db.prepare('SELECT * FROM staff WHERE id = ?').get(sw.requester_id);
+  if (!requester) return;
+  const chatId = resolveTargetChatId(tenantId, requester.department_id);
+  if (!chatId) return;
+  const deptName = requester.department || 'Schedule';
+  const type = sw.swap_type || (sw.target_staff_id ? 'trade' : 'sick');
+  const send = async (buf, caption) => {
+    if (!buf) return;
+    try { await entry.bot.api.sendPhoto(chatId, new InputFile(buf, 'after.png'), { caption, parse_mode: 'Markdown' }); }
+    catch (e) { console.warn('[bot] result snapshot send:', e.message); }
+  };
+  try {
+    if (type === 'sick') {
+      const img = await renderSnapshot(requester.department_id, requester.id, [sw.target_date], `AFTER APPROVE — ${sw.target_date.slice(0, 7)} (${deptName})`);
+      await send(img, `✅ *Setelah approve* — Sick on ${sw.target_date}`);
+    } else if (type === 'move_off') {
+      const m1 = sw.target_date.slice(0, 7);
+      const m2 = (sw.partner_date || '').slice(0, 7);
+      const img1 = await renderSnapshot(requester.department_id, requester.id, [sw.target_date, sw.partner_date].filter(Boolean), `AFTER APPROVE — ${m1} (${deptName})`);
+      await send(img1, `✅ *Setelah approve* — off pindah ${sw.target_date} → ${sw.partner_date}`);
+      if (m2 && m1 !== m2) {
+        const img2 = await renderSnapshot(requester.department_id, requester.id, [sw.target_date, sw.partner_date], `AFTER APPROVE — ${m2} (${deptName})`);
+        await send(img2, `✅ *Setelah approve* — bulan kedua (${m2})`);
+      }
+    } else if (type === 'trade') {
+      const partnerStaff = db.prepare('SELECT id FROM staff WHERE id = ?').get(sw.target_staff_id);
+      if (partnerStaff) {
+        const focusDate = sw.target_date <= (sw.partner_date || sw.target_date) ? sw.target_date : sw.partner_date;
+        const markedMap = { [sw.requester_id]: [sw.target_date], [sw.target_staff_id]: [sw.partner_date || sw.target_date] };
+        const img = await renderSnapshotMulti(requester.department_id, sw.requester_id, markedMap, `AFTER APPROVE — Trade ${sw.target_date} <-> ${sw.partner_date || sw.target_date} (${deptName})`, focusDate);
+        await send(img, `✅ *Setelah approve* — shift swapped`);
+      }
+    }
+  } catch (e) { console.warn('[bot] pushSwapResultSnapshot:', e.message); }
 }
 
 export async function notifyOvertime(tenantId, staff, breakType, durationMin, limitMin) {
