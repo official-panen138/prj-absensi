@@ -109,6 +109,22 @@ function attachHandlers(bot, tenantId) {
         return ctx.reply(`✅ Swap reject diproses${reason ? ' dengan alasan' : ''}.`);
       }
 
+      if (pending.type === 'leave') {
+        const lr = db.prepare('SELECT * FROM leave_requests WHERE id = ? AND tenant_id = ?').get(pending.id, tenantId);
+        if (!lr) return ctx.reply('❌ Leave request tidak ditemukan');
+        if (lr.status !== 'pending') return ctx.reply('Sudah diproses sebelumnya');
+        db.prepare("UPDATE leave_requests SET status = 'rejected', reject_reason = ?, decided_at = CURRENT_TIMESTAMP WHERE id = ?").run(reason, pending.id);
+        const requester = db.prepare('SELECT name, telegram_id FROM staff WHERE id = ?').get(lr.staff_id);
+        if (requester?.telegram_id) {
+          const msg = `❌ Pengajuan *cuti* Anda (${lr.start_date} → ${lr.end_date}, ${lr.days} hari) di-reject oleh admin.` + (reason ? `\n\n💬 Alasan: ${reason}` : '');
+          try { await bot.api.sendMessage(requester.telegram_id, msg, { parse_mode: 'Markdown' }); } catch {}
+        }
+        const newText = pending.originalText + `\n\n━━━━━━━━━━━━\n❌ REJECTED oleh ${by}` + (reason ? `\n💬 Alasan: ${reason}` : '');
+        try { await bot.api.editMessageText(pending.originalChatId, pending.originalMessageId, newText, { reply_markup: { inline_keyboard: [] } }); } catch {}
+        emitLiveUpdate(tenantId, 'leave_rejected', { leave_id: pending.id });
+        return ctx.reply(`✅ Leave reject diproses${reason ? ' dengan alasan' : ''}.`);
+      }
+
       if (pending.type === 'registration') {
         const staff = db.prepare('SELECT * FROM staff WHERE id = ? AND tenant_id = ?').get(pending.id, tenantId);
         if (!staff) return ctx.reply('❌ Staff tidak ditemukan');
@@ -310,6 +326,61 @@ function attachHandlers(bot, tenantId) {
     await ctx.answerCallbackQuery({ text: 'Ketik alasan reject di chat ini' });
     try {
       await ctx.reply(`💬 Ketik *alasan reject* untuk swap request ini:\n_(ketik "skip" kalau tanpa alasan — batal: ketik "batal")_`, {
+        parse_mode: 'Markdown',
+        reply_markup: { force_reply: true, selective: true },
+      });
+    } catch {}
+  });
+
+  bot.callbackQuery(/^leave_approve_(\d+)$/, async (ctx) => {
+    const leaveId = parseInt(ctx.match[1]);
+    if (!isAdmin(tenantId, ctx.from.id)) return ctx.answerCallbackQuery({ text: '⛔ Unauthorized', show_alert: true });
+    const lr = db.prepare('SELECT * FROM leave_requests WHERE id = ? AND tenant_id = ?').get(leaveId, tenantId);
+    if (!lr) return ctx.answerCallbackQuery({ text: 'Leave request tidak ditemukan', show_alert: true });
+    if (lr.status !== 'pending') return ctx.answerCallbackQuery({ text: 'Sudah diproses sebelumnya', show_alert: true });
+    try {
+      const start = new Date(lr.start_date + 'T00:00:00');
+      const end = new Date(lr.end_date + 'T00:00:00');
+      db.transaction(() => {
+        for (let t = start.getTime(); t <= end.getTime(); t += 86400000) {
+          const ds = new Date(t).toISOString().slice(0, 10);
+          db.prepare(`INSERT INTO schedule_daily(tenant_id,staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,'leave','morning',1)
+                      ON CONFLICT(staff_id,date) DO UPDATE SET status='leave', is_manual_override=1`)
+            .run(lr.tenant_id, lr.staff_id, ds);
+        }
+        db.prepare("UPDATE leave_requests SET status = 'approved', decided_at = CURRENT_TIMESTAMP WHERE id = ?").run(leaveId);
+      })();
+    } catch (e) {
+      return ctx.answerCallbackQuery({ text: e.message || 'Gagal apply leave', show_alert: true });
+    }
+    emitLiveUpdate(tenantId, 'leave_approved', { leave_id: leaveId });
+    const requester = db.prepare('SELECT name, telegram_id FROM staff WHERE id = ?').get(lr.staff_id);
+    if (requester?.telegram_id) {
+      try { await bot.api.sendMessage(requester.telegram_id, `✅ Pengajuan *cuti* Anda (${lr.start_date} → ${lr.end_date}, ${lr.days} hari) di-approve! Selamat beristirahat 🙏`, { parse_mode: 'Markdown', reply_markup: openMiniAppKeyboard(tenantId) }); } catch {}
+    }
+    const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
+    const orig = ctx.callbackQuery.message.text || '';
+    const newText = orig + `\n\n━━━━━━━━━━━━\n✅ APPROVED oleh ${by}`;
+    try { await ctx.editMessageText(newText, { reply_markup: { inline_keyboard: [] } }); } catch {}
+    await ctx.answerCallbackQuery({ text: '✅ Approved!' });
+  });
+
+  bot.callbackQuery(/^leave_reject_(\d+)$/, async (ctx) => {
+    const leaveId = parseInt(ctx.match[1]);
+    if (!isAdmin(tenantId, ctx.from.id)) return ctx.answerCallbackQuery({ text: '⛔ Unauthorized', show_alert: true });
+    const lr = db.prepare('SELECT * FROM leave_requests WHERE id = ? AND tenant_id = ?').get(leaveId, tenantId);
+    if (!lr) return ctx.answerCallbackQuery({ text: 'Leave tidak ditemukan', show_alert: true });
+    if (lr.status !== 'pending') return ctx.answerCallbackQuery({ text: 'Sudah diproses', show_alert: true });
+    ctx.session.pendingReject = {
+      type: 'leave',
+      id: leaveId,
+      originalText: ctx.callbackQuery.message.text || '',
+      originalChatId: ctx.callbackQuery.message.chat.id,
+      originalMessageId: ctx.callbackQuery.message.message_id,
+    };
+    await ctx.answerCallbackQuery({ text: 'Ketik alasan reject di chat ini' });
+    try {
+      await ctx.reply(`💬 Ketik *alasan reject* untuk pengajuan cuti ini:\n_(ketik "skip" kalau tanpa alasan — batal: ketik "batal")_`, {
         parse_mode: 'Markdown',
         reply_markup: { force_reply: true, selective: true },
       });
@@ -637,6 +708,29 @@ export async function notifySwapRequest(tenantId, requester, partner, targetDate
   try {
     await entry.bot.api.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: kb });
   } catch (e) { console.warn('[bot] notifySwapRequest send notif failed:', e.message); }
+}
+
+export async function notifyLeaveRequest(tenantId, requester, payload) {
+  const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
+  if (muted.includes('shift_swap')) return; // pakai prefs yg sama dengan swap
+  const entry = runningBots.get(tenantId);
+  if (!entry) return;
+  const chatId = resolveTargetChatId(tenantId, requester.department_id);
+  if (!chatId) return;
+  const mention = buildHeadMention(requester.department_id);
+  const dept = requester.department ? ` · ${requester.department}` : '';
+  const { start_date, end_date, days, reason, period_key, leave_id } = payload;
+  const text = `${mention}🏖️ *PENGAJUAN CUTI*\n\n` +
+    `👤 ${requester.name}${dept}\n` +
+    `📅 ${start_date} → ${end_date}\n` +
+    `⏳ ${days} hari · period ${period_key}` +
+    (reason ? `\n\n💬 ${reason}` : '');
+  const kb = new InlineKeyboard()
+    .text('✅ Approve', `leave_approve_${leave_id}`)
+    .text('❌ Reject', `leave_reject_${leave_id}`);
+  try {
+    await entry.bot.api.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: kb });
+  } catch (e) { console.warn('[bot] notifyLeaveRequest send notif failed:', e.message); }
 }
 
 // Dipanggil SETELAH swap di-approve. Render snapshot dari DB state sekarang

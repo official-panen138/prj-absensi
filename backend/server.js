@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { db, getSetting, setSetting, getDefaultTenantId, getTenantSetting, setTenantSetting } from './db.js';
-import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest, pushSwapResultSnapshot } from './bot.js';
+import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest, pushSwapResultSnapshot, notifyLeaveRequest } from './bot.js';
 import { liveBus, emitLiveUpdate } from './events.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -697,6 +697,117 @@ app.put('/api/swap/:id/reject', auth, (req, res) => {
   ok(res, { id });
 });
 
+// ============ LEAVE / CUTI ============
+function getLeaveConfig(tenantId) {
+  const cfg = getTenantSetting(tenantId, 'leave_config', null) || {};
+  return {
+    enabled: cfg.enabled !== false,
+    days_per_period: Number.isFinite(+cfg.days_per_period) && +cfg.days_per_period > 0 ? +cfg.days_per_period : 12,
+    period_months: Number.isFinite(+cfg.period_months) && +cfg.period_months > 0 ? +cfg.period_months : 6,
+  };
+}
+function getPeriodKeyForDate(dateStr, periodMonths = 6) {
+  const d = new Date(dateStr + 'T00:00:00');
+  if (isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = d.getMonth(); // 0-11
+  if (periodMonths === 6) return `${y}-H${m < 6 ? 1 : 2}`;
+  if (periodMonths === 3) return `${y}-Q${Math.floor(m / 3) + 1}`;
+  if (periodMonths === 12) return `${y}`;
+  // generic: split year into ceil(12/periodMonths) bins
+  const bin = Math.floor(m / periodMonths) + 1;
+  return `${y}-P${bin}`;
+}
+function periodDateRange(periodKey, periodMonths = 6) {
+  // returns { start, end } inclusive YYYY-MM-DD
+  if (periodMonths === 6) {
+    const [y, h] = periodKey.split('-H');
+    const yr = +y;
+    if (h === '1') return { start: `${yr}-01-01`, end: `${yr}-06-30` };
+    if (h === '2') return { start: `${yr}-07-01`, end: `${yr}-12-31` };
+  }
+  if (periodMonths === 12) return { start: `${periodKey}-01-01`, end: `${periodKey}-12-31` };
+  return null;
+}
+function diffDaysInclusive(start, end) {
+  const a = new Date(start + 'T00:00:00');
+  const b = new Date(end + 'T00:00:00');
+  if (isNaN(a.getTime()) || isNaN(b.getTime())) return 0;
+  return Math.floor((b - a) / 86400000) + 1;
+}
+function getLeaveQuota(tenantId, staffId, cfg) {
+  const c = cfg || getLeaveConfig(tenantId);
+  const today = new Date().toISOString().slice(0, 10);
+  const periodKey = getPeriodKeyForDate(today, c.period_months);
+  const range = periodDateRange(periodKey, c.period_months);
+  const rows = db.prepare(`SELECT status, days FROM leave_requests
+                           WHERE tenant_id = ? AND staff_id = ? AND period_key = ? AND status IN ('pending','approved')`)
+    .all(tenantId, staffId, periodKey);
+  let used = 0, pending = 0;
+  for (const r of rows) {
+    if (r.status === 'approved') used += r.days;
+    else if (r.status === 'pending') pending += r.days;
+  }
+  return {
+    enabled: c.enabled,
+    period_key: periodKey,
+    period_months: c.period_months,
+    period_start: range?.start || null,
+    period_end: range?.end || null,
+    days_per_period: c.days_per_period,
+    used,
+    pending,
+    remaining: Math.max(0, c.days_per_period - used - pending),
+  };
+}
+
+const leaveJoinBase = `SELECT lr.id, lr.start_date, lr.end_date, lr.days, lr.reason, lr.status, lr.reject_reason,
+                              lr.period_key, lr.created_at, lr.decided_at,
+                              s.name AS staff_name, s.department AS staff_dept
+                       FROM leave_requests lr
+                       JOIN staff s ON s.id = lr.staff_id`;
+
+app.get('/api/leave/pending', auth, (req, res) => {
+  const sc = scopeTenant(req, 'lr.tenant_id');
+  ok(res, db.prepare(leaveJoinBase + " WHERE lr.status = 'pending'" + sc.clause + ' ORDER BY lr.created_at DESC').all(...sc.params));
+});
+app.get('/api/leave/history', auth, (req, res) => {
+  const sc = scopeTenant(req, 'lr.tenant_id');
+  ok(res, db.prepare(leaveJoinBase + ' WHERE 1=1' + sc.clause + ' ORDER BY lr.created_at DESC LIMIT 200').all(...sc.params));
+});
+app.put('/api/leave/:id/approve', auth, (req, res) => {
+  const id = +req.params.id;
+  const sc = scopeTenant(req);
+  const lr = db.prepare('SELECT * FROM leave_requests WHERE id = ?' + sc.clause).get(id, ...sc.params);
+  if (!lr) return fail(res, 404, 'Not found or not in your tenant');
+  if (lr.status !== 'pending') return fail(res, 400, 'Already processed');
+  // Apply: set schedule_daily.status = 'leave' for each date in range
+  const start = new Date(lr.start_date + 'T00:00:00');
+  const end = new Date(lr.end_date + 'T00:00:00');
+  db.transaction(() => {
+    for (let t = start.getTime(); t <= end.getTime(); t += 86400000) {
+      const ds = new Date(t).toISOString().slice(0, 10);
+      db.prepare(`INSERT INTO schedule_daily(tenant_id,staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,'leave','morning',1)
+                  ON CONFLICT(staff_id,date) DO UPDATE SET status='leave', is_manual_override=1`)
+        .run(lr.tenant_id, lr.staff_id, ds);
+    }
+    db.prepare("UPDATE leave_requests SET status = 'approved', decided_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+  })();
+  emitLiveUpdate(lr.tenant_id, 'leave_approved', { leave_id: id });
+  ok(res, { id });
+});
+app.put('/api/leave/:id/reject', auth, (req, res) => {
+  const id = +req.params.id;
+  const sc = scopeTenant(req);
+  const lr = db.prepare('SELECT id, tenant_id FROM leave_requests WHERE id = ?' + sc.clause).get(id, ...sc.params);
+  if (!lr) return fail(res, 404, 'Not found or not in your tenant');
+  const { reject_reason } = req.body || {};
+  db.prepare("UPDATE leave_requests SET status = 'rejected', reject_reason = ?, decided_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .run(reject_reason || '', id);
+  emitLiveUpdate(lr.tenant_id, 'leave_rejected', { leave_id: id });
+  ok(res, { id });
+});
+
 // ============ REPORTS ============
 function dateRange(ym, from, to) {
   const start = from || `${ym}-01`;
@@ -889,6 +1000,11 @@ const KV_ROUTES = {
     start: Array.isArray(body.start) ? body.start.map((s) => String(s).trim()).filter(Boolean) : [],
     end: Array.isArray(body.end) ? body.end.map((s) => String(s).trim()).filter(Boolean) : [],
   }],
+  '/api/settings/leave-config': (body) => ['leave_config', {
+    enabled: body.enabled !== false,
+    days_per_period: Number.isFinite(+body.days_per_period) && +body.days_per_period > 0 ? +body.days_per_period : 12,
+    period_months: [3, 6, 12].includes(+body.period_months) ? +body.period_months : 6,
+  }],
   '/api/settings/swap-modes': (body) => ['swap_modes_enabled', {
     sick: body.sick !== false,
     move_off: body.move_off !== false,
@@ -1069,6 +1185,8 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
   const todayShift = sched?.shift || req.staff.current_shift;
 
   const swapModes = getTenantSetting(req.staff.tenant_id, 'swap_modes_enabled', null) || { sick: true, move_off: true, trade: true };
+  const leaveCfg = getLeaveConfig(req.staff.tenant_id);
+  const leaveQuota = getLeaveQuota(req.staff.tenant_id, req.staff.id, leaveCfg);
 
   res.json({
     success: true,
@@ -1086,6 +1204,7 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
     client_ip: clientIp,
     motivation_quotes: motivationQuotes,
     swap_modes_enabled: swapModes,
+    leave_quota: leaveQuota,
   });
 });
 
@@ -1188,6 +1307,63 @@ app.post('/api/bot/swap-request', tgAuth, (req, res) => {
   notifySwapRequest(req.staff.tenant_id, req.staff, partner, target_date, pDate, currentShift, reason, swapId, type).catch((e) => console.warn('[bot] notifySwapRequest:', e.message));
   emitLiveUpdate(req.staff.tenant_id, 'swap_request', { swap_id: swapId });
   ok(res, { id: swapId, type });
+});
+
+app.get('/api/bot/leave-quota', tgAuth, (req, res) => {
+  ok(res, getLeaveQuota(req.staff.tenant_id, req.staff.id));
+});
+
+app.post('/api/bot/leave-request', tgAuth, (req, res) => {
+  const cfg = getLeaveConfig(req.staff.tenant_id);
+  if (!cfg.enabled) return fail(res, 403, 'Fitur cuti sedang dinonaktifkan oleh admin.');
+  const { start_date, end_date, reason } = req.body || {};
+  if (!start_date || !end_date) return fail(res, 400, 'Tanggal mulai & selesai wajib diisi.');
+  if (!reason || !reason.trim()) return fail(res, 400, 'Alasan cuti wajib diisi.');
+  if (end_date < start_date) return fail(res, 400, 'Tanggal selesai tidak boleh sebelum tanggal mulai.');
+  const today = new Date().toISOString().slice(0, 10);
+  if (start_date < today) return fail(res, 400, 'Tanggal mulai tidak boleh masa lalu.');
+
+  const days = diffDaysInclusive(start_date, end_date);
+  if (days <= 0) return fail(res, 400, 'Rentang tanggal tidak valid.');
+  if (days > cfg.days_per_period) return fail(res, 400, `Maksimal ${cfg.days_per_period} hari per pengajuan.`);
+
+  // Both endpoints harus dalam period yang sama
+  const periodStart = getPeriodKeyForDate(start_date, cfg.period_months);
+  const periodEnd = getPeriodKeyForDate(end_date, cfg.period_months);
+  if (periodStart !== periodEnd) {
+    return fail(res, 400, 'Cuti tidak boleh melintasi 2 period (bagi jadi 2 pengajuan terpisah).');
+  }
+
+  // Cek kuota
+  const quotaSnapshot = getLeaveQuota(req.staff.tenant_id, req.staff.id, cfg);
+  if (quotaSnapshot.period_key !== periodStart) {
+    // pengajuan untuk period berbeda dari today — hitung ulang untuk period itu
+    const rows = db.prepare(`SELECT status, days FROM leave_requests
+                             WHERE tenant_id = ? AND staff_id = ? AND period_key = ? AND status IN ('pending','approved')`)
+      .all(req.staff.tenant_id, req.staff.id, periodStart);
+    let used = 0; for (const r of rows) used += r.days;
+    if (used + days > cfg.days_per_period) {
+      return fail(res, 400, `Kuota period ${periodStart} tidak cukup. Tersisa ${cfg.days_per_period - used} hari.`);
+    }
+  } else if (quotaSnapshot.remaining < days) {
+    return fail(res, 400, `Sisa kuota cuti hanya ${quotaSnapshot.remaining} hari (period ${quotaSnapshot.period_key}).`);
+  }
+
+  // Cek konflik dengan jadwal: tidak boleh ada hari yang sudah sick/leave
+  const conflict = db.prepare(`SELECT date, status FROM schedule_daily
+                               WHERE staff_id = ? AND date BETWEEN ? AND ? AND status IN ('sick','leave')`)
+    .get(req.staff.id, start_date, end_date);
+  if (conflict) return fail(res, 400, `Tanggal ${conflict.date} sudah berstatus ${conflict.status.toUpperCase()}.`);
+
+  const r = db.prepare(`INSERT INTO leave_requests(tenant_id,staff_id,start_date,end_date,days,reason,period_key,status)
+                        VALUES(?,?,?,?,?,?,?, 'pending')`)
+    .run(req.staff.tenant_id, req.staff.id, start_date, end_date, days, reason.trim(), periodStart);
+  const leaveId = r.lastInsertRowid;
+
+  notifyLeaveRequest(req.staff.tenant_id, req.staff, { start_date, end_date, days, reason: reason.trim(), period_key: periodStart, leave_id: leaveId })
+    .catch((e) => console.warn('[bot] notifyLeaveRequest:', e.message));
+  emitLiveUpdate(req.staff.tenant_id, 'leave_request', { leave_id: leaveId });
+  ok(res, { id: leaveId, days, period_key: periodStart });
 });
 
 app.post('/api/bot/clock-in-request-qr', tgAuth, async (req, res) => {

@@ -280,6 +280,27 @@ function migrateV2_MultiTenant() {
     );
   `);
 
+  // leave_requests: pengajuan cuti per period (default 6 bulan, max 12 hari)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS leave_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL,
+      staff_id INTEGER NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      days INTEGER NOT NULL,
+      reason TEXT,
+      period_key TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      reject_reason TEXT,
+      decided_at TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_lr_tenant ON leave_requests(tenant_id);
+    CREATE INDEX IF NOT EXISTS idx_lr_staff_period ON leave_requests(staff_id, period_key, status);
+  `);
+
   // qr_sessions: dynamic QR untuk clock-in/clock-out (generate per request, expire 5 menit)
   db.exec(`
     CREATE TABLE IF NOT EXISTS qr_sessions (

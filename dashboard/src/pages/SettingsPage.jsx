@@ -44,6 +44,7 @@ export default function SettingsPage({ token, user }) {
   const [botForm, setBotForm] = useState({ bot_token: '', monitor_group_chat_id: '', miniapp_url: '' });
   const [motivForm, setMotivForm] = useState({ start: '', end: '' });
   const [swapModes, setSwapModes] = useState({ sick: true, move_off: true, trade: true });
+  const [leaveCfg, setLeaveCfg] = useState({ enabled: true, days_per_period: 12, period_months: 6 });
   const [departments, setDepartments] = useState([]);
   const [breakDeptId, setBreakDeptId] = useState(''); // '' = tenant default
   const [shiftDeptId, setShiftDeptId] = useState('');
@@ -125,6 +126,14 @@ export default function SettingsPage({ token, user }) {
           sick: sm.sick !== false,
           move_off: sm.move_off !== false,
           trade: sm.trade !== false,
+        });
+      }
+      const lc = s.leave_config?.value;
+      if (lc && typeof lc === 'object') {
+        setLeaveCfg({
+          enabled: lc.enabled !== false,
+          days_per_period: +lc.days_per_period > 0 ? +lc.days_per_period : 12,
+          period_months: [3, 6, 12].includes(+lc.period_months) ? +lc.period_months : 6,
         });
       }
       try { const bs = await apiFetch(token, '/bot/status'); setBotStatus(bs.data || null); } catch (e) {}
@@ -420,6 +429,60 @@ export default function SettingsPage({ token, user }) {
               </div>
             </label>
           ))}
+        </div>
+      </Card>
+
+      {/* Leave / Cuti Config */}
+      <Card className="p-5 mb-4">
+        <SectionHeader title="🏖️ Cuti / Leave" actions={isAdmin && (
+          <Btn size="sm" onClick={() => save('leave_cfg', '/settings/leave-config', leaveCfg)} disabled={saving.leave_cfg}>
+            {saving.leave_cfg ? <Spinner /> : '💾 Save Cuti'}
+          </Btn>
+        )} />
+        <div className="text-xs text-gray-500 mb-3.5">
+          Setiap staff punya kuota cuti X hari per period. Default: 12 hari per 6 bulan.
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <FormRow label="STATUS" note="aktif/nonaktifkan fitur cuti">
+            <label className={`flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer ${leaveCfg.enabled ? 'bg-emerald-500/10 border-emerald-500/40' : 'bg-gray-800 border-gray-700'} ${!isAdmin ? 'opacity-60 cursor-not-allowed' : ''}`}>
+              <input
+                type="checkbox"
+                checked={leaveCfg.enabled}
+                disabled={!isAdmin}
+                onChange={(e) => setLeaveCfg((c) => ({ ...c, enabled: e.target.checked }))}
+                className="w-4 h-4 accent-emerald-500"
+              />
+              <span className={`text-[13px] font-semibold ${leaveCfg.enabled ? 'text-emerald-400' : 'text-gray-400'}`}>
+                {leaveCfg.enabled ? '● Aktif' : '○ Nonaktif'}
+              </span>
+            </label>
+          </FormRow>
+          <FormRow label="MAX HARI / PERIOD">
+            <input
+              type="number"
+              min="1"
+              max="60"
+              className={inputCls}
+              value={leaveCfg.days_per_period}
+              disabled={!isAdmin}
+              onChange={(e) => setLeaveCfg((c) => ({ ...c, days_per_period: Math.max(1, Math.min(60, parseInt(e.target.value) || 1)) }))}
+            />
+          </FormRow>
+          <FormRow label="PANJANG PERIOD" note="reset kuota">
+            <select
+              className={inputCls}
+              value={leaveCfg.period_months}
+              disabled={!isAdmin}
+              onChange={(e) => setLeaveCfg((c) => ({ ...c, period_months: +e.target.value }))}
+            >
+              <option value={3}>3 bulan (per Quarter)</option>
+              <option value={6}>6 bulan (Semester)</option>
+              <option value={12}>12 bulan (Tahunan)</option>
+            </select>
+          </FormRow>
+        </div>
+        <div className="mt-3 text-[11px] text-gray-500">
+          Setting ini berlaku untuk semua staff di tenant. Sisa kuota staff terlihat di Mini App pada section "🏖️ Pengajuan Cuti".
         </div>
       </Card>
 

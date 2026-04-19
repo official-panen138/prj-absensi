@@ -66,6 +66,8 @@ export default function MiniApp() {
   const [swapForm, setSwapForm] = useState({ type: 'sick', target_date: '', reason: '', target_staff_id: '', partner_date: '' });
   const [colleagues, setColleagues] = useState([]);
   const [partnerShift, setPartnerShift] = useState(null);
+  const [showLeave, setShowLeave] = useState(false);
+  const [leaveForm, setLeaveForm] = useState({ start_date: '', end_date: '', reason: '' });
 
   useEffect(() => {
     if (showSwap && colleagues.length === 0 && token) {
@@ -511,6 +513,80 @@ export default function MiniApp() {
           );
         })()}
       </div>
+
+      {/* Request Cuti / Leave Section */}
+      {me?.leave_quota?.enabled !== false && (
+        <div style={{marginTop:14,paddingTop:14,borderTop:'1px solid rgb(31 41 55)'}}>
+          <button
+            onClick={() => setShowLeave(!showLeave)}
+            style={{width:'100%',padding:'10px',background:'transparent',border:'1px solid rgb(55 65 81)',borderRadius:10,color:'#9ca3af',fontSize:13,cursor:'pointer'}}
+          >
+            🏖️ {showLeave ? 'Tutup' : 'Pengajuan Cuti'}
+          </button>
+          {showLeave && (() => {
+            const q = me?.leave_quota || { remaining: 12, used: 0, pending: 0, days_per_period: 12, period_key: '-', period_start: '', period_end: '' };
+            const usedPct = Math.min(100, Math.round(((q.used + q.pending) / Math.max(1, q.days_per_period)) * 100));
+            const barColor = q.remaining === 0 ? '#dc2626' : q.remaining <= 3 ? '#d97706' : '#10b981';
+            return (
+              <div style={{marginTop:12,padding:14,background:'rgb(31 41 55)',borderRadius:12,border:'1px solid rgb(55 65 81)'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:6}}>
+                  <span style={{fontSize:11,color:'#9ca3af',letterSpacing:1}}>SISA KUOTA — {q.period_key}</span>
+                  <span style={{fontSize:18,fontWeight:800,color:barColor}}>{q.remaining}<span style={{fontSize:11,color:'#9ca3af',fontWeight:500}}> / {q.days_per_period} hari</span></span>
+                </div>
+                <div style={{height:6,background:'rgb(17 24 39)',borderRadius:3,overflow:'hidden',marginBottom:8}}>
+                  <div style={{height:'100%',width:`${usedPct}%`,background:barColor,transition:'width 0.3s'}} />
+                </div>
+                <div style={{fontSize:10,color:'#6b7280',marginBottom:12}}>
+                  Period: {q.period_start} → {q.period_end} · Terpakai {q.used} · Pending {q.pending}
+                </div>
+
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:10}}>
+                  <div>
+                    <div style={{fontSize:10,color:'#9ca3af',marginBottom:4,letterSpacing:1}}>MULAI</div>
+                    <input type="date" value={leaveForm.start_date} onChange={(e) => setLeaveForm((f) => ({ ...f, start_date: e.target.value, end_date: f.end_date && f.end_date >= e.target.value ? f.end_date : e.target.value }))}
+                      style={{width:'100%',padding:'10px',borderRadius:8,border:'1px solid rgb(55 65 81)',background:'rgb(17 24 39)',color:'#f3f4f6',fontSize:13}} />
+                  </div>
+                  <div>
+                    <div style={{fontSize:10,color:'#9ca3af',marginBottom:4,letterSpacing:1}}>SELESAI</div>
+                    <input type="date" value={leaveForm.end_date} min={leaveForm.start_date} onChange={(e) => setLeaveForm((f) => ({ ...f, end_date: e.target.value }))}
+                      style={{width:'100%',padding:'10px',borderRadius:8,border:'1px solid rgb(55 65 81)',background:'rgb(17 24 39)',color:'#f3f4f6',fontSize:13}} />
+                  </div>
+                </div>
+
+                {leaveForm.start_date && leaveForm.end_date && leaveForm.end_date >= leaveForm.start_date && (
+                  <div style={{padding:'8px 10px',background:'rgba(16,185,129,0.1)',border:'1px solid rgba(16,185,129,0.3)',borderRadius:8,fontSize:11,color:'#6ee7b7',marginBottom:10,textAlign:'center'}}>
+                    Total: <strong>{Math.floor((new Date(leaveForm.end_date) - new Date(leaveForm.start_date)) / 86400000) + 1}</strong> hari cuti
+                  </div>
+                )}
+
+                <div style={{marginBottom:10}}>
+                  <div style={{fontSize:10,color:'#9ca3af',marginBottom:4,letterSpacing:1}}>ALASAN CUTI</div>
+                  <textarea value={leaveForm.reason} onChange={(e) => setLeaveForm((f) => ({ ...f, reason: e.target.value }))}
+                    placeholder="Misal: Liburan keluarga, urusan pribadi..."
+                    style={{width:'100%',padding:'10px',borderRadius:8,border:'1px solid rgb(55 65 81)',background:'rgb(17 24 39)',color:'#f3f4f6',fontSize:13,minHeight:60,resize:'vertical',fontFamily:'inherit'}} />
+                </div>
+
+                <Btn onClick={async () => {
+                  setErr(''); setInfo('');
+                  if (!leaveForm.start_date || !leaveForm.end_date) { setErr('Pilih tanggal mulai & selesai'); return; }
+                  if (!leaveForm.reason.trim()) { setErr('Alasan cuti wajib diisi'); return; }
+                  try {
+                    setBusy(true);
+                    const r = await api('/leave-request', token, { method: 'POST', body: leaveForm });
+                    setInfo(`✓ Pengajuan cuti ${r.data?.days || ''} hari terkirim. Tunggu approval admin.`);
+                    setLeaveForm({ start_date: '', end_date: '', reason: '' });
+                    setShowLeave(false);
+                    refresh();
+                  } catch (e) { setErr(e.message); }
+                  finally { setBusy(false); }
+                }} disabled={busy || q.remaining === 0}>
+                  {q.remaining === 0 ? '🚫 Kuota Habis' : '📤 Submit Pengajuan Cuti'}
+                </Btn>
+              </div>
+            );
+          })()}
+        </div>
+      )}
 
       <div style={{textAlign:'center',marginTop:24,fontSize:10,color:'#4b5563',fontFamily:'monospace'}}>
         SECURE_ACCESS // STAFF_PANEL
