@@ -182,7 +182,9 @@ function attachHandlers(bot, tenantId) {
     if (staff.telegram_id) await notifyApproved(tenantId, staff.telegram_id, staff.name);
     emitLiveUpdate(tenantId, 'staff_approved_bot', { staff_id: staffId });
     const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
-    await ctx.editMessageText(`✅ *${staff.name}* APPROVED\n_oleh ${by}_`, { parse_mode: 'Markdown' });
+    const orig = ctx.callbackQuery.message.text || '';
+    const newText = orig + `\n\n━━━━━━━━━━━━\n✅ APPROVED oleh ${by}`;
+    try { await ctx.editMessageText(newText, { reply_markup: { inline_keyboard: [] } }); } catch {}
     await ctx.answerCallbackQuery({ text: '✅ Approved!' });
   });
 
@@ -231,7 +233,9 @@ function attachHandlers(bot, tenantId) {
       try { await bot.api.sendMessage(requester.telegram_id, `✅ *${typeLabel}* untuk *${sw.target_date}* di-approve!`, { parse_mode: 'Markdown', reply_markup: openMiniAppKeyboard(tenantId) }); } catch {}
     }
     const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
-    await ctx.editMessageText(`✅ *APPROVED*\n_oleh ${by}_`, { parse_mode: 'Markdown' });
+    const orig = ctx.callbackQuery.message.text || '';
+    const newText = orig + `\n\n━━━━━━━━━━━━\n✅ APPROVED oleh ${by}`;
+    try { await ctx.editMessageText(newText, { reply_markup: { inline_keyboard: [] } }); } catch {}
     await ctx.answerCallbackQuery({ text: '✅ Approved!' });
     // Kirim snapshot AFTER ke monitor group (state sudah ter-update di DB)
     pushSwapResultSnapshot(tenantId, sw).catch(() => {});
@@ -249,7 +253,9 @@ function attachHandlers(bot, tenantId) {
       try { await bot.api.sendMessage(requester.telegram_id, `❌ Swap request Anda untuk ${sw.target_date} *ditolak* oleh admin.`, { parse_mode: 'Markdown' }); } catch {}
     }
     const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
-    await ctx.editMessageText(`❌ *Swap REJECTED*\n_oleh ${by}_`, { parse_mode: 'Markdown' });
+    const orig = ctx.callbackQuery.message.text || '';
+    const newText = orig + `\n\n━━━━━━━━━━━━\n❌ REJECTED oleh ${by}`;
+    try { await ctx.editMessageText(newText, { reply_markup: { inline_keyboard: [] } }); } catch {}
     await ctx.answerCallbackQuery({ text: '❌ Rejected' });
   });
 
@@ -265,7 +271,9 @@ function attachHandlers(bot, tenantId) {
       } catch {}
     }
     const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
-    await ctx.editMessageText(`❌ *${staff.name}* REJECTED\n_oleh ${by}_`, { parse_mode: 'Markdown' });
+    const orig = ctx.callbackQuery.message.text || '';
+    const newText = orig + `\n\n━━━━━━━━━━━━\n❌ REJECTED oleh ${by}`;
+    try { await ctx.editMessageText(newText, { reply_markup: { inline_keyboard: [] } }); } catch {}
     await ctx.answerCallbackQuery({ text: '❌ Rejected' });
   });
 
