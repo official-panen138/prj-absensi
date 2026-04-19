@@ -911,7 +911,50 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
   });
 });
 
-app.post('/api/bot/clock-in', tgAuth, (req, res) => {
+// Helper: verify workstation QR token belongs to this tenant + active
+function findActiveWorkstation(tenantId, qrToken) {
+  if (!qrToken) return null;
+  const clean = String(qrToken).startsWith('WMS-') ? String(qrToken).slice(4) : String(qrToken);
+  return db.prepare('SELECT * FROM workstations WHERE tenant_id = ? AND qr_token = ? AND is_active = 1').get(tenantId, clean);
+}
+
+app.post('/api/bot/clock-in-qr', tgAuth, (req, res) => {
+  const clientIp = getClientIp(req);
+  if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_in', clientIp).catch(() => {});
+    return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Clock-In.`);
+  }
+  const { qr_token } = req.body || {};
+  const ws = findActiveWorkstation(req.staff.tenant_id, qr_token);
+  if (!ws) return fail(res, 400, 'QR Workstation tidak valid atau sudah nonaktif. Scan QR yang ada di kantor.');
+  // Forward ke handler clock-in (tanpa cek IP karena sudah dicek di sini)
+  req.body._wsId = ws.id;
+  return clockInHandler(req, res);
+});
+
+app.post('/api/bot/clock-out-qr', tgAuth, (req, res) => {
+  const clientIp = getClientIp(req);
+  if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_out', clientIp).catch(() => {});
+    return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Clock-Out.`);
+  }
+  const { qr_token } = req.body || {};
+  const ws = findActiveWorkstation(req.staff.tenant_id, qr_token);
+  if (!ws) return fail(res, 400, 'QR Workstation tidak valid atau sudah nonaktif. Scan QR yang ada di kantor.');
+  req.body._wsId = ws.id;
+  return clockOutHandler(req, res);
+});
+
+function clockInHandler(req, res) {
+  return clockInImpl(req, res);
+}
+function clockOutHandler(req, res) {
+  return clockOutImpl(req, res);
+}
+
+app.post('/api/bot/clock-in', tgAuth, (req, res) => clockInImpl(req, res));
+
+function clockInImpl(req, res) {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
     notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_in', clientIp).catch(() => {});
@@ -945,9 +988,11 @@ app.post('/api/bot/clock-in', tgAuth, (req, res) => {
   }
   emitLiveUpdate(req.staff.tenant_id, 'clock_in', { staff_id: req.staff.id });
   ok(res, { clock_in: now.toISOString(), late_minutes: lateMin });
-});
+}
 
-app.post('/api/bot/clock-out', tgAuth, (req, res) => {
+app.post('/api/bot/clock-out', tgAuth, (req, res) => clockOutImpl(req, res));
+
+function clockOutImpl(req, res) {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
     notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_out', clientIp).catch(() => {});
@@ -966,7 +1011,7 @@ app.post('/api/bot/clock-out', tgAuth, (req, res) => {
     .run(now.toISOString(), 'offline', workMin, productive, att.id);
   emitLiveUpdate(req.staff.tenant_id, 'clock_out', { staff_id: req.staff.id });
   ok(res, { clock_out: now.toISOString(), total_work_minutes: workMin, productive_ratio: productive });
-});
+}
 
 app.post('/api/bot/break-start', tgAuth, async (req, res) => {
   const clientIp = getClientIp(req);

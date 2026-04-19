@@ -113,6 +113,23 @@ export default function MiniApp() {
     finally { setBusy(false); }
   };
 
+  const scanQrForAction = (label, actPath) => {
+    const tg = window.Telegram?.WebApp;
+    if (!tg?.showScanQrPopup) {
+      setErr('QR scanner tidak didukung di versi Telegram ini. Update Telegram app.');
+      return;
+    }
+    setErr(''); setInfo('');
+    tg.showScanQrPopup({ text: label }, (text) => {
+      if (!text) return false;
+      tg.closeScanQrPopup();
+      act(actPath, { qr_token: text });
+      return true;
+    });
+  };
+  const scanAndClockIn = () => scanQrForAction('Scan QR Workstation untuk START', '/clock-in-qr');
+  const scanAndClockOut = () => scanQrForAction('Scan QR Workstation untuk END', '/clock-out-qr');
+
   const scanQrAndEnd = async () => {
     const tg = window.Telegram?.WebApp;
     if (!tg?.showScanQrPopup) {
@@ -243,8 +260,8 @@ export default function MiniApp() {
       )}
 
       {notStarted && (
-        <Btn onClick={() => act('/clock-in')} disabled={me?.ip_allowed === false}>
-          ▶ START (Clock In){me?.ip_allowed === false ? ' · Butuh IP Kantor' : ''}
+        <Btn onClick={scanAndClockIn} disabled={me?.ip_allowed === false}>
+          📷 Scan QR — START (Clock In){me?.ip_allowed === false ? ' · Butuh IP Kantor' : ''}
         </Btn>
       )}
 
@@ -270,8 +287,8 @@ export default function MiniApp() {
             {mkBtn('toilet', '🚻 Toilet')}
             {mkBtn('outside', '🏪 Go Out')}
             <div style={{fontSize:11,color:'#6b7280',marginBottom:6,marginTop:14}}>END</div>
-            <Btn color="red" onClick={() => act('/clock-out')} disabled={me?.ip_allowed === false}>
-              ⏹ END (Clock Out){me?.ip_allowed === false ? ' · Butuh IP Kantor' : ''}
+            <Btn color="red" onClick={scanAndClockOut} disabled={me?.ip_allowed === false}>
+              📷 Scan QR — END (Clock Out){me?.ip_allowed === false ? ' · Butuh IP Kantor' : ''}
             </Btn>
           </>
         );
