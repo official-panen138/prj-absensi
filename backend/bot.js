@@ -50,7 +50,15 @@ function getRegistrationPin(tenantId) {
 }
 
 function attachHandlers(bot, tenantId) {
-  bot.use(session({ initial: () => ({ step: null, form: {} }) }));
+  bot.use(session({
+    initial: () => ({ step: null, form: {}, pendingReject: null }),
+    getSessionKey: (ctx) => {
+      const chatId = ctx.chat?.id;
+      const userId = ctx.from?.id;
+      if (chatId == null || userId == null) return undefined;
+      return `${chatId}_${userId}`; // per-(chat, user) supaya tiap admin di grup punya state sendiri
+    },
+  }));
 
   bot.command('start', async (ctx) => {
     const payload = ctx.match;
@@ -71,6 +79,50 @@ function attachHandlers(bot, tenantId) {
   bot.on('message:text', async (ctx) => {
     const txt = ctx.message.text.trim();
     const s = ctx.session;
+
+    // Handle pending reject reason dari admin
+    if (s.pendingReject) {
+      if (!isAdmin(tenantId, ctx.from.id)) {
+        s.pendingReject = null;
+        return ctx.reply('⛔ Sesi tidak valid');
+      }
+      const pending = s.pendingReject;
+      s.pendingReject = null;
+      if (txt.toLowerCase() === 'batal') {
+        return ctx.reply('🚫 Reject dibatalkan');
+      }
+      const reason = txt.toLowerCase() === 'skip' ? '' : txt;
+      const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
+
+      if (pending.type === 'swap') {
+        const sw = db.prepare('SELECT * FROM swap_requests WHERE id = ? AND tenant_id = ?').get(pending.id, tenantId);
+        if (!sw) return ctx.reply('❌ Swap tidak ditemukan');
+        if (sw.status !== 'pending') return ctx.reply('Sudah diproses sebelumnya');
+        db.prepare('UPDATE swap_requests SET status = ?, reject_reason = ? WHERE id = ?').run('rejected', reason, pending.id);
+        const requester = db.prepare('SELECT name, telegram_id FROM staff WHERE id = ?').get(sw.requester_id);
+        if (requester?.telegram_id) {
+          const msg = `❌ Request Anda untuk *${sw.target_date}* di-reject oleh admin.` + (reason ? `\n\n💬 Alasan: ${reason}` : '');
+          try { await bot.api.sendMessage(requester.telegram_id, msg, { parse_mode: 'Markdown' }); } catch {}
+        }
+        const newText = pending.originalText + `\n\n━━━━━━━━━━━━\n❌ REJECTED oleh ${by}` + (reason ? `\n💬 Alasan: ${reason}` : '');
+        try { await bot.api.editMessageText(pending.originalChatId, pending.originalMessageId, newText, { reply_markup: { inline_keyboard: [] } }); } catch {}
+        return ctx.reply(`✅ Swap reject diproses${reason ? ' dengan alasan' : ''}.`);
+      }
+
+      if (pending.type === 'registration') {
+        const staff = db.prepare('SELECT * FROM staff WHERE id = ? AND tenant_id = ?').get(pending.id, tenantId);
+        if (!staff) return ctx.reply('❌ Staff tidak ditemukan');
+        db.prepare('UPDATE staff SET is_active = 0 WHERE id = ?').run(pending.id);
+        if (staff.telegram_id) {
+          const msg = `❌ Maaf ${staff.name}, registrasi Anda *ditolak* oleh admin.` + (reason ? `\n\n💬 Alasan: ${reason}` : '\n\nHubungi admin untuk info lebih lanjut.');
+          try { await bot.api.sendMessage(staff.telegram_id, msg, { parse_mode: 'Markdown' }); } catch {}
+        }
+        const newText = pending.originalText + `\n\n━━━━━━━━━━━━\n❌ REJECTED oleh ${by}` + (reason ? `\n💬 Alasan: ${reason}` : '');
+        try { await bot.api.editMessageText(pending.originalChatId, pending.originalMessageId, newText, { reply_markup: { inline_keyboard: [] } }); } catch {}
+        return ctx.reply(`✅ Registration reject diproses${reason ? ' dengan alasan' : ''}.`);
+      }
+    }
+
     const existing = findStaffByTelegramId(tenantId, ctx.from.id);
     if (existing && existing.is_approved && !s.step) {
       return ctx.reply('Tap below to open WMS.', { reply_markup: openMiniAppKeyboard(tenantId) });
@@ -247,16 +299,21 @@ function attachHandlers(bot, tenantId) {
     const sw = db.prepare('SELECT * FROM swap_requests WHERE id = ? AND tenant_id = ?').get(swapId, tenantId);
     if (!sw) return ctx.answerCallbackQuery({ text: 'Swap tidak ditemukan', show_alert: true });
     if (sw.status !== 'pending') return ctx.answerCallbackQuery({ text: 'Sudah diproses', show_alert: true });
-    db.prepare('UPDATE swap_requests SET status = ?, reject_reason = ? WHERE id = ?').run('rejected', '', swapId);
-    const requester = db.prepare('SELECT name, telegram_id FROM staff WHERE id = ?').get(sw.requester_id);
-    if (requester?.telegram_id) {
-      try { await bot.api.sendMessage(requester.telegram_id, `❌ Swap request Anda untuk ${sw.target_date} *ditolak* oleh admin.`, { parse_mode: 'Markdown' }); } catch {}
-    }
-    const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
-    const orig = ctx.callbackQuery.message.text || '';
-    const newText = orig + `\n\n━━━━━━━━━━━━\n❌ REJECTED oleh ${by}`;
-    try { await ctx.editMessageText(newText, { reply_markup: { inline_keyboard: [] } }); } catch {}
-    await ctx.answerCallbackQuery({ text: '❌ Rejected' });
+    // Set pending reject state — admin akan ketik alasan di chat ini
+    ctx.session.pendingReject = {
+      type: 'swap',
+      id: swapId,
+      originalText: ctx.callbackQuery.message.text || '',
+      originalChatId: ctx.callbackQuery.message.chat.id,
+      originalMessageId: ctx.callbackQuery.message.message_id,
+    };
+    await ctx.answerCallbackQuery({ text: 'Ketik alasan reject di chat ini' });
+    try {
+      await ctx.reply(`💬 Ketik *alasan reject* untuk swap request ini:\n_(ketik "skip" kalau tanpa alasan — batal: ketik "batal")_`, {
+        parse_mode: 'Markdown',
+        reply_markup: { force_reply: true, selective: true },
+      });
+    } catch {}
   });
 
   bot.callbackQuery(/^reject_(\d+)$/, async (ctx) => {
@@ -264,17 +321,21 @@ function attachHandlers(bot, tenantId) {
     if (!isAdmin(tenantId, ctx.from.id)) return ctx.answerCallbackQuery({ text: '⛔ Unauthorized', show_alert: true });
     const staff = db.prepare('SELECT * FROM staff WHERE id = ? AND tenant_id = ?').get(staffId, tenantId);
     if (!staff) return ctx.answerCallbackQuery({ text: 'Staff tidak ditemukan', show_alert: true });
-    db.prepare('UPDATE staff SET is_active = 0 WHERE id = ?').run(staffId);
-    if (staff.telegram_id) {
-      try {
-        await bot.api.sendMessage(staff.telegram_id, `❌ Maaf ${staff.name}, registrasi Anda *ditolak* oleh admin.\n\nHubungi admin untuk info lebih lanjut.`, { parse_mode: 'Markdown' });
-      } catch {}
-    }
-    const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
-    const orig = ctx.callbackQuery.message.text || '';
-    const newText = orig + `\n\n━━━━━━━━━━━━\n❌ REJECTED oleh ${by}`;
-    try { await ctx.editMessageText(newText, { reply_markup: { inline_keyboard: [] } }); } catch {}
-    await ctx.answerCallbackQuery({ text: '❌ Rejected' });
+    // Set pending reject state — admin akan ketik alasan di chat ini
+    ctx.session.pendingReject = {
+      type: 'registration',
+      id: staffId,
+      originalText: ctx.callbackQuery.message.text || '',
+      originalChatId: ctx.callbackQuery.message.chat.id,
+      originalMessageId: ctx.callbackQuery.message.message_id,
+    };
+    await ctx.answerCallbackQuery({ text: 'Ketik alasan reject di chat ini' });
+    try {
+      await ctx.reply(`💬 Ketik *alasan reject* untuk pendaftaran *${staff.name}*:\n_(ketik "skip" kalau tanpa alasan — batal: ketik "batal")_`, {
+        parse_mode: 'Markdown',
+        reply_markup: { force_reply: true, selective: true },
+      });
+    } catch {}
   });
 
   bot.catch((err) => console.error('[bot] error:', err.error?.message || err));
