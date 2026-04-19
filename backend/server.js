@@ -130,6 +130,61 @@ app.delete('/api/tenants/:id', auth, requireSuperAdmin, (req, res) => {
   ok(res, { id });
 });
 
+// ============ DEPARTMENTS ============
+app.get('/api/departments', auth, (req, res) => {
+  const sc = scopeTenant(req);
+  const rows = db.prepare(`
+    SELECT d.id, d.tenant_id, d.name, d.slug, d.head_telegram_id, d.head_username, d.monitor_group_chat_id, d.created_at,
+           (SELECT COUNT(*) FROM staff s WHERE s.department_id = d.id AND s.is_active = 1) AS staff_count
+    FROM departments d
+    WHERE 1=1${sc.clause}
+    ORDER BY d.name
+  `).all(...sc.params);
+  ok(res, rows);
+});
+
+app.post('/api/departments', auth, (req, res) => {
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
+  const { name, slug, head_telegram_id, head_username, monitor_group_chat_id } = req.body || {};
+  if (!name || !String(name).trim()) return fail(res, 400, 'Name required');
+  const finalSlug = (slug || String(name)).toLowerCase().trim().replace(/[^a-z0-9]+/g, '_');
+  try {
+    const r = db.prepare('INSERT INTO departments(tenant_id,name,slug,head_telegram_id,head_username,monitor_group_chat_id) VALUES(?,?,?,?,?,?)')
+      .run(tid, String(name).trim(), finalSlug, head_telegram_id || null, head_username || null, monitor_group_chat_id || null);
+    ok(res, { id: r.lastInsertRowid });
+  } catch (e) { fail(res, 400, e.message); }
+});
+
+app.put('/api/departments/:id', auth, (req, res) => {
+  const id = +req.params.id;
+  const sc = scopeTenant(req);
+  const existing = db.prepare('SELECT id FROM departments WHERE id = ?' + sc.clause).get(id, ...sc.params);
+  if (!existing) return fail(res, 404, 'Not found or not in your tenant');
+  const allowed = ['name', 'slug', 'head_telegram_id', 'head_username', 'monitor_group_chat_id'];
+  const fields = [], values = [];
+  for (const k of allowed) if (k in req.body) { fields.push(`${k} = ?`); values.push(req.body[k] || null); }
+  if (!fields.length) return ok(res, { id });
+  values.push(id);
+  db.prepare(`UPDATE departments SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  // Sync staff.department text kalau name berubah
+  if ('name' in req.body) {
+    db.prepare('UPDATE staff SET department = ? WHERE department_id = ?').run(String(req.body.name).trim(), id);
+  }
+  ok(res, { id });
+});
+
+app.delete('/api/departments/:id', auth, (req, res) => {
+  const id = +req.params.id;
+  const sc = scopeTenant(req);
+  const existing = db.prepare('SELECT id FROM departments WHERE id = ?' + sc.clause).get(id, ...sc.params);
+  if (!existing) return fail(res, 404, 'Not found or not in your tenant');
+  const cnt = db.prepare('SELECT COUNT(*) AS c FROM staff WHERE department_id = ?').get(id).c;
+  if (cnt > 0) return fail(res, 400, `Tidak bisa hapus, masih ada ${cnt} staff. Pindah/hapus staff dulu.`);
+  db.prepare('DELETE FROM departments WHERE id = ?').run(id);
+  ok(res, { id });
+});
+
 // ============ STAFF ============
 app.get('/api/staff', auth, (req, res) => {
   const { shift, category, department } = req.query;
@@ -144,13 +199,31 @@ app.get('/api/staff', auth, (req, res) => {
   ok(res, rows);
 });
 
+// Resolve dept_id + name dari body (terima department_id atau department text)
+function resolveDept(tenantId, body) {
+  if (body.department_id) {
+    const d = db.prepare('SELECT id, name FROM departments WHERE id = ? AND tenant_id = ?').get(+body.department_id, tenantId);
+    if (d) return { id: d.id, name: d.name };
+  }
+  if (body.department) {
+    const d = db.prepare('SELECT id, name FROM departments WHERE tenant_id = ? AND LOWER(name) = LOWER(?)').get(tenantId, body.department);
+    if (d) return { id: d.id, name: d.name };
+    // Auto-create department kalau name unik
+    const slug = String(body.department).toLowerCase().trim().replace(/[^a-z0-9]+/g, '_');
+    const r = db.prepare('INSERT INTO departments(tenant_id,name,slug) VALUES(?,?,?)').run(tenantId, String(body.department).trim(), slug);
+    return { id: r.lastInsertRowid, name: String(body.department).trim() };
+  }
+  return { id: null, name: null };
+}
+
 app.post('/api/staff', auth, (req, res) => {
   const b = req.body || {};
   if (!b.name) return fail(res, 400, 'Name required');
   const tid = writeTenantId(req);
   if (!tid) return fail(res, 400, 'No tenant context');
-  const r = db.prepare(`INSERT INTO staff(tenant_id,name,category,current_shift,department,phone,telegram_id,telegram_username,join_date,is_active,is_approved)
-                        VALUES(?,?,?,?,?,?,?,?,?,1,1)`).run(tid, b.name, b.category || 'indonesian', b.current_shift || 'morning', b.department || null, b.phone || null, b.telegram_id || null, b.telegram_username || null, b.join_date || null);
+  const dept = resolveDept(tid, b);
+  const r = db.prepare(`INSERT INTO staff(tenant_id,name,category,current_shift,department,department_id,phone,telegram_id,telegram_username,join_date,is_active,is_approved)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,1,1)`).run(tid, b.name, b.category || 'indonesian', b.current_shift || 'morning', dept.name, dept.id, b.phone || null, b.telegram_id || null, b.telegram_username || null, b.join_date || null);
   ok(res, { id: r.lastInsertRowid });
 });
 
@@ -163,9 +236,15 @@ app.put('/api/staff/:id', auth, (req, res) => {
   const id = +req.params.id;
   const s = findStaffScoped(req, id);
   if (!s) return fail(res, 404, 'Staff not found');
-  const allowed = ['name', 'category', 'current_shift', 'department', 'phone', 'telegram_id', 'telegram_username', 'join_date'];
+  const allowed = ['name', 'category', 'current_shift', 'phone', 'telegram_id', 'telegram_username', 'join_date'];
   const fields = [], values = [];
   for (const k of allowed) if (k in req.body) { fields.push(`${k} = ?`); values.push(req.body[k]); }
+  // Handle department update via resolveDept (sync department + department_id)
+  if ('department' in req.body || 'department_id' in req.body) {
+    const dept = resolveDept(s.tenant_id, req.body);
+    fields.push('department = ?', 'department_id = ?');
+    values.push(dept.name, dept.id);
+  }
   if (!fields.length) return ok(res, { id });
   values.push(id);
   db.prepare(`UPDATE staff SET ${fields.join(', ')} WHERE id = ?`).run(...values);

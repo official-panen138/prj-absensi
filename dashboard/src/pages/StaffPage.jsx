@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../lib/api';
-import { shiftBgClass, DEPARTMENTS } from '../lib/theme';
+import { shiftBgClass, DEPARTMENTS as DEPARTMENTS_FALLBACK } from '../lib/theme';
 import { Card, Spinner, Toast, Btn, Badge, Modal, FormRow, SectionHeader } from '../components/ui';
 
 export default function StaffPage({ token }) {
@@ -12,6 +12,11 @@ export default function StaffPage({ token }) {
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
+  const [departments, setDepartments] = useState([]);
+
+  useEffect(() => {
+    apiFetch(token, '/departments').then((r) => setDepartments(r.data || [])).catch(() => {});
+  }, [token]);
 
   const fetchStaff = useCallback(async () => {
     setLoading(true);
@@ -157,7 +162,18 @@ export default function StaffPage({ token }) {
           <FormRow label="NAME"><input className={inputCls} value={form.name || ''} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></FormRow>
           <FormRow label="CATEGORY"><select className={inputCls} value={form.category || 'indonesian'} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}><option value="indonesian">Indonesian</option><option value="local">Cambodian</option></select></FormRow>
           <FormRow label="DEFAULT SHIFT" note="hanya dipakai kalau tidak ada jadwal untuk hari itu — jadwal di Schedule Calendar selalu prioritas"><select className={inputCls} value={form.current_shift || 'morning'} onChange={(e) => setForm((f) => ({ ...f, current_shift: e.target.value }))}><option value="morning">Morning</option><option value="middle">Middle</option><option value="night">Night</option></select></FormRow>
-          <FormRow label="DEPARTMENT"><select className={inputCls} value={form.department || ''} onChange={(e) => setForm((f) => ({ ...f, department: e.target.value }))}><option value="">— Select —</option>{DEPARTMENTS.map((d) => <option key={d}>{d}</option>)}</select></FormRow>
+          <FormRow label="DEPARTMENT" note={departments.length ? `${departments.length} department di tenant ini` : 'Tambah di menu Departments'}>
+            <select className={inputCls} value={form.department_id || ''} onChange={(e) => {
+              const id = e.target.value ? +e.target.value : null;
+              const d = departments.find((x) => x.id === id);
+              setForm((f) => ({ ...f, department_id: id, department: d?.name || '' }));
+            }}>
+              <option value="">— Select —</option>
+              {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              {/* Fallback kalau belum ada dept di DB */}
+              {!departments.length && DEPARTMENTS_FALLBACK.map((d) => <option key={d} value={`legacy:${d}`}>{d} (legacy)</option>)}
+            </select>
+          </FormRow>
           <FormRow label="PHONE"><input className={inputCls} value={form.phone || ''} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} placeholder="+62..." /></FormRow>
           <FormRow label="TELEGRAM ID"><input className={inputCls} value={form.telegram_id || ''} onChange={(e) => setForm((f) => ({ ...f, telegram_id: e.target.value }))} placeholder="123456789" /></FormRow>
           <FormRow label="TELEGRAM USERNAME"><input className={inputCls} value={form.telegram_username || ''} onChange={(e) => setForm((f) => ({ ...f, telegram_username: e.target.value }))} placeholder="@username" /></FormRow>

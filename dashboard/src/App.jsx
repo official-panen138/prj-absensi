@@ -11,6 +11,7 @@ import ReportsPage from './pages/ReportsPage';
 import ActivityLogPage from './pages/ActivityLogPage';
 import SettingsPage from './pages/SettingsPage';
 import TenantsPage from './pages/TenantsPage';
+import DepartmentsPage from './pages/DepartmentsPage';
 
 function useIsMobile() {
   const [mobile, setMobile] = useState(window.innerWidth < 1024);
@@ -78,6 +79,7 @@ export default function App() {
       case 'activity': return <ActivityLogPage token={auth.token} />;
       case 'settings': return <SettingsPage token={auth.token} user={auth.user} />;
       case 'tenants': return <TenantsPage token={auth.token} />;
+      case 'departments': return <DepartmentsPage token={auth.token} />;
       default: return <LiveBoardPage token={auth.token} />;
     }
   };
@@ -95,7 +97,11 @@ export default function App() {
       </div>
 
       <nav style={{flex:1,padding:'8px 6px',overflowY:'auto'}}>
-        {[...NAV_ITEMS, ...(isSuperAdmin ? [{ id: 'tenants', icon: '🏢', label: 'Tenants' }] : [])].map((item) => {
+        {[
+          ...NAV_ITEMS,
+          { id: 'departments', icon: '🏬', label: 'Departments' },
+          ...(isSuperAdmin ? [{ id: 'tenants', icon: '🏢', label: 'Tenants' }] : []),
+        ].map((item) => {
           const active = page === item.id;
           return (
             <button

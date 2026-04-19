@@ -195,6 +195,55 @@ function migrateV2_MultiTenant() {
     console.log('[db] added qr_token_out to workstations + backfill from qr_token');
   }
 
+  // departments: per-tenant entity dengan head TG ID + opsional monitor group sendiri
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS departments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      slug TEXT,
+      head_telegram_id TEXT,
+      head_username TEXT,
+      monitor_group_chat_id TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_dept_tenant ON departments(tenant_id);
+  `);
+
+  // staff: tambah department_id (FK ke departments) — kolom department TEXT tetap untuk backward compat
+  if (!hasColumn('staff', 'department_id')) {
+    db.exec('ALTER TABLE staff ADD COLUMN department_id INTEGER');
+    console.log('[db] added department_id to staff');
+  }
+
+  // Backfill department_id dari nilai TEXT yang sudah ada
+  try {
+    const distinctDepts = db.prepare(`
+      SELECT DISTINCT tenant_id, department FROM staff
+      WHERE department IS NOT NULL AND department != '' AND department_id IS NULL AND tenant_id IS NOT NULL
+    `).all();
+    if (distinctDepts.length) {
+      const insDept = db.prepare('INSERT INTO departments(tenant_id, name, slug) VALUES(?, ?, ?)');
+      const findDept = db.prepare('SELECT id FROM departments WHERE tenant_id = ? AND LOWER(name) = LOWER(?)');
+      const updStaff = db.prepare('UPDATE staff SET department_id = ? WHERE tenant_id = ? AND department = ? AND department_id IS NULL');
+      let created = 0;
+      const tx = db.transaction(() => {
+        distinctDepts.forEach(({ tenant_id, department }) => {
+          let dept = findDept.get(tenant_id, department);
+          if (!dept) {
+            const slug = String(department).toLowerCase().replace(/[^a-z0-9]+/g, '_');
+            const r = insDept.run(tenant_id, department, slug);
+            dept = { id: r.lastInsertRowid };
+            created++;
+          }
+          updStaff.run(dept.id, tenant_id, department);
+        });
+      });
+      tx();
+      if (created > 0) console.log(`[db] created ${created} departments from existing staff data`);
+    }
+  } catch (e) { console.warn('[db] dept backfill:', e.message); }
+
   // qr_sessions: dynamic QR untuk clock-in/clock-out (generate per request, expire 5 menit)
   db.exec(`
     CREATE TABLE IF NOT EXISTS qr_sessions (
