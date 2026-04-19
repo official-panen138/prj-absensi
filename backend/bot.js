@@ -76,6 +76,38 @@ function attachHandlers(bot, tenantId) {
     await ctx.reply('👋 Selamat datang di *Attendance*.\n\nMasukkan *PIN registrasi* untuk mulai mendaftar:', { parse_mode: 'Markdown' });
   });
 
+  bot.command('jadwal', async (ctx) => {
+    const staff = findStaffByTelegramId(tenantId, ctx.from.id);
+    if (!staff || !staff.is_approved) {
+      return ctx.reply('⛔ Hanya staff terdaftar yang bisa lihat jadwal. Ketik /start dulu untuk daftar.');
+    }
+    if (!staff.department_id) {
+      return ctx.reply('ℹ️ Anda belum di-assign ke department. Hubungi admin.');
+    }
+    // Bulan target: arg /jadwal YYYY-MM, default = bulan ini
+    const arg = (ctx.match || '').trim();
+    const today = new Date();
+    let focusDate;
+    if (/^\d{4}-\d{2}$/.test(arg)) {
+      focusDate = `${arg}-01`;
+    } else {
+      focusDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
+    }
+    const monthLabel = focusDate.slice(0, 7);
+    const deptName = staff.department || 'Schedule';
+    try {
+      const png = await renderSnapshot(staff.department_id, staff.id, [today.toISOString().slice(0, 10)], `JADWAL TIM — ${deptName} (${monthLabel})`);
+      if (!png) return ctx.reply(`ℹ️ Belum ada jadwal untuk department ${deptName} di ${monthLabel}.`);
+      await ctx.replyWithPhoto(new InputFile(png, 'jadwal.png'), {
+        caption: `📅 *Jadwal ${deptName}* — ${monthLabel}\n\n_Tip: ketik /jadwal YYYY-MM untuk bulan lain (contoh: /jadwal 2026-05)_`,
+        parse_mode: 'Markdown',
+      });
+    } catch (e) {
+      console.warn('[bot] /jadwal:', e.message);
+      await ctx.reply('❌ Gagal generate jadwal. Coba lagi.');
+    }
+  });
+
   bot.on('message:text', async (ctx) => {
     const txt = ctx.message.text.trim();
     const s = ctx.session;
