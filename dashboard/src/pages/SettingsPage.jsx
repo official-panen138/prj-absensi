@@ -45,6 +45,7 @@ export default function SettingsPage({ token, user }) {
   const [motivForm, setMotivForm] = useState({ start: '', end: '' });
   const [swapModes, setSwapModes] = useState({ sick: true, move_off: true, trade: true });
   const [leaveCfg, setLeaveCfg] = useState({ enabled: true, days_per_period: 12, period_months: 6 });
+  const [briefingCfg, setBriefingCfg] = useState({ enabled: true, hour: 6 });
   const [departments, setDepartments] = useState([]);
   const [breakDeptId, setBreakDeptId] = useState(''); // '' = tenant default
   const [shiftDeptId, setShiftDeptId] = useState('');
@@ -134,6 +135,13 @@ export default function SettingsPage({ token, user }) {
           enabled: lc.enabled !== false,
           days_per_period: +lc.days_per_period > 0 ? +lc.days_per_period : 12,
           period_months: [3, 6, 12].includes(+lc.period_months) ? +lc.period_months : 6,
+        });
+      }
+      const db_ = s.daily_briefing?.value;
+      if (db_ && typeof db_ === 'object') {
+        setBriefingCfg({
+          enabled: db_.enabled !== false,
+          hour: Number.isInteger(+db_.hour) ? +db_.hour : 6,
         });
       }
       try { const bs = await apiFetch(token, '/bot/status'); setBotStatus(bs.data || null); } catch (e) {}
@@ -483,6 +491,55 @@ export default function SettingsPage({ token, user }) {
         </div>
         <div className="mt-3 text-[11px] text-gray-500">
           Setting ini berlaku untuk semua staff di tenant. Sisa kuota staff terlihat di Mini App pada section "🏖️ Pengajuan Cuti".
+        </div>
+      </Card>
+
+      {/* Daily Morning Briefing */}
+      <Card className="p-5 mb-4">
+        <SectionHeader title="🌅 Daily Briefing" actions={isAdmin && (
+          <div className="flex gap-2">
+            <Btn size="sm" variant="ghost" onClick={async () => {
+              setSaving((s) => ({ ...s, briefing_test: true }));
+              try { await apiFetch(token, '/settings/daily-briefing/test', { method: 'POST', body: {} }); setToast({ type: 'ok', text: 'Briefing test terkirim ke grup department' }); }
+              catch (e) { setToast({ type: 'error', text: e.message }); }
+              finally { setSaving((s) => ({ ...s, briefing_test: false })); }
+            }} disabled={saving.briefing_test}>
+              {saving.briefing_test ? <Spinner /> : '🧪 Kirim Test'}
+            </Btn>
+            <Btn size="sm" onClick={() => save('briefing', '/settings/daily-briefing', briefingCfg)} disabled={saving.briefing}>
+              {saving.briefing ? <Spinner /> : '💾 Save Briefing'}
+            </Btn>
+          </div>
+        )} />
+        <div className="text-xs text-gray-500 mb-3.5">
+          Setiap hari pada jam yang ditentukan, bot akan kirim ke grup department: daftar staff yang OFF / SAKIT / CUTI hari itu, dengan tag ke kepala department.
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-[500px]">
+          <FormRow label="STATUS">
+            <label className={`flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer ${briefingCfg.enabled ? 'bg-emerald-500/10 border-emerald-500/40' : 'bg-gray-800 border-gray-700'} ${!isAdmin ? 'opacity-60 cursor-not-allowed' : ''}`}>
+              <input
+                type="checkbox"
+                checked={briefingCfg.enabled}
+                disabled={!isAdmin}
+                onChange={(e) => setBriefingCfg((c) => ({ ...c, enabled: e.target.checked }))}
+                className="w-4 h-4 accent-emerald-500"
+              />
+              <span className={`text-[13px] font-semibold ${briefingCfg.enabled ? 'text-emerald-400' : 'text-gray-400'}`}>
+                {briefingCfg.enabled ? '● Aktif' : '○ Nonaktif'}
+              </span>
+            </label>
+          </FormRow>
+          <FormRow label="JAM KIRIM" note="WIB (UTC+7) — 0–23">
+            <input
+              type="number"
+              min="0"
+              max="23"
+              className={inputCls}
+              value={briefingCfg.hour}
+              disabled={!isAdmin}
+              onChange={(e) => setBriefingCfg((c) => ({ ...c, hour: Math.max(0, Math.min(23, parseInt(e.target.value) || 0)) }))}
+            />
+          </FormRow>
         </div>
       </Card>
 

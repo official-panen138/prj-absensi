@@ -873,6 +873,50 @@ export async function pushSwapResultSnapshot(tenantId, sw) {
   } catch (e) { console.warn('[bot] pushSwapResultSnapshot:', e.message); }
 }
 
+// Daily morning briefing — daftar staff off/sakit/cuti hari ini per department
+function todayPPLocal() {
+  return new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
+}
+
+export async function notifyDailyOffSummary(tenantId, dateStr = null) {
+  const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
+  if (muted.includes('daily_summary')) return;
+  const entry = runningBots.get(tenantId);
+  if (!entry) return;
+  const today = dateStr || todayPPLocal();
+  const dow = ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'][new Date(today + 'T00:00:00').getDay()];
+  const depts = db.prepare('SELECT id, name, head_telegram_id, head_username, monitor_group_chat_id FROM departments WHERE tenant_id = ?').all(tenantId);
+  for (const dept of depts) {
+    const rows = db.prepare(`
+      SELECT s.name, sd.status FROM schedule_daily sd
+      JOIN staff s ON s.id = sd.staff_id
+      WHERE sd.date = ? AND s.tenant_id = ? AND s.department_id = ? AND s.is_active = 1 AND s.is_approved = 1
+        AND sd.status IN ('off','sick','leave')
+      ORDER BY sd.status, s.name
+    `).all(today, tenantId, dept.id);
+
+    const chatId = resolveTargetChatId(tenantId, dept.id);
+    if (!chatId) continue;
+    const mention = buildHeadMention(dept.id);
+
+    let body;
+    if (rows.length === 0) {
+      body = `${mention}🌅 *BRIEFING ${dow} ${today}*\n🏬 ${dept.name}\n\n✅ Tidak ada staff yang libur/sakit/cuti hari ini.\nFull team — semangat! 💪`;
+    } else {
+      const groups = { off: [], sick: [], leave: [] };
+      for (const r of rows) groups[r.status].push(r.name);
+      const parts = [];
+      if (groups.off.length) parts.push(`🛌 *OFF (${groups.off.length})*\n${groups.off.map((n) => '• ' + n).join('\n')}`);
+      if (groups.sick.length) parts.push(`🤒 *SAKIT (${groups.sick.length})*\n${groups.sick.map((n) => '• ' + n).join('\n')}`);
+      if (groups.leave.length) parts.push(`🏖️ *CUTI (${groups.leave.length})*\n${groups.leave.map((n) => '• ' + n).join('\n')}`);
+      body = `${mention}🌅 *BRIEFING ${dow} ${today}*\n🏬 ${dept.name}\n\n${parts.join('\n\n')}\n\n_Total tidak hadir: ${rows.length} orang_`;
+    }
+    try {
+      await entry.bot.api.sendMessage(chatId, body, { parse_mode: 'Markdown' });
+    } catch (e) { console.warn('[bot] notifyDailyOffSummary failed:', e.message); }
+  }
+}
+
 export async function notifyOvertime(tenantId, staff, breakType, durationMin, limitMin) {
   const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
   if (muted.includes('break_overtime')) return;

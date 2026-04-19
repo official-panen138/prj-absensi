@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { db, getSetting, setSetting, getDefaultTenantId, getTenantSetting, setTenantSetting } from './db.js';
-import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest, pushSwapResultSnapshot, notifyLeaveRequest, pushLeaveResultSnapshot } from './bot.js';
+import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest, pushSwapResultSnapshot, notifyLeaveRequest, pushLeaveResultSnapshot, notifyDailyOffSummary } from './bot.js';
 import { liveBus, emitLiveUpdate } from './events.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -979,6 +979,16 @@ app.put('/api/settings/shift-times', auth, (req, res) => {
   ok(res, { department_id: deptId });
 });
 
+// Trigger daily briefing manually (admin testing)
+app.post('/api/settings/daily-briefing/test', auth, async (req, res) => {
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'tenant required');
+  try {
+    await notifyDailyOffSummary(tid, todayPP());
+    ok(res, { sent: true });
+  } catch (e) { fail(res, 500, e.message); }
+});
+
 // Delete dept override (back to tenant default)
 app.delete('/api/settings/dept-overrides/:deptId', auth, (req, res) => {
   const tid = writeTenantId(req);
@@ -1000,6 +1010,10 @@ const KV_ROUTES = {
   '/api/settings/motivation-quotes': (body) => ['motivation_quotes', {
     start: Array.isArray(body.start) ? body.start.map((s) => String(s).trim()).filter(Boolean) : [],
     end: Array.isArray(body.end) ? body.end.map((s) => String(s).trim()).filter(Boolean) : [],
+  }],
+  '/api/settings/daily-briefing': (body) => ['daily_briefing', {
+    enabled: body.enabled !== false,
+    hour: Number.isInteger(+body.hour) && +body.hour >= 0 && +body.hour <= 23 ? +body.hour : 6,
   }],
   '/api/settings/leave-config': (body) => ['leave_config', {
     enabled: body.enabled !== false,
@@ -1644,4 +1658,28 @@ app.listen(PORT, () => {
     console.log(`[backend] DB stats: ${u} users · ${s} staff · ${sd} schedule rows · ${att} attendance rows`);
   } catch (e) { console.warn('[backend] stats query failed:', e.message); }
   startBot();
+  startDailyBriefingScheduler();
 });
+
+// Daily briefing scheduler — fires at HH:00 PP per tenant once per date
+function startDailyBriefingScheduler() {
+  setInterval(async () => {
+    try {
+      const ppNow = new Date(Date.now() + 7 * 3600000);
+      const today = todayPP();
+      const tenants = db.prepare('SELECT id FROM tenants').all();
+      for (const t of tenants) {
+        const cfg = getTenantSetting(t.id, 'daily_briefing', null) || {};
+        if (cfg.enabled === false) continue;
+        const hour = Number.isInteger(+cfg.hour) ? +cfg.hour : 6;
+        if (ppNow.getUTCHours() !== hour) continue;
+        const lastSent = getTenantSetting(t.id, 'daily_briefing_last_sent', null);
+        if (lastSent === today) continue;
+        await notifyDailyOffSummary(t.id, today);
+        setTenantSetting(t.id, 'daily_briefing_last_sent', today);
+        console.log(`[scheduler] daily briefing sent tenant=${t.id} date=${today}`);
+      }
+    } catch (e) { console.warn('[scheduler] daily briefing tick:', e.message); }
+  }, 60_000);
+  console.log('[scheduler] daily briefing started (checks every 60s)');
+}
