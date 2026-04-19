@@ -95,11 +95,28 @@ function attachHandlers(bot, tenantId) {
     }
     const monthLabel = focusDate.slice(0, 7);
     const deptName = staff.department || 'Schedule';
+    // Cek status approval jadwal bulan ini
+    const schedRow = db.prepare('SELECT status FROM schedules WHERE tenant_id = ? AND month = ?').get(tenantId, monthLabel);
+    if (!schedRow) {
+      return ctx.reply(
+        `📭 *Jadwal ${monthLabel} belum dibuat*\n\nAdmin belum membuat jadwal untuk bulan ini. Tunggu pengumuman atau hubungi kepala department.`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+    if (schedRow.status !== 'approved') {
+      return ctx.reply(
+        `⏳ *Jadwal ${monthLabel} masih DRAFT*\n\n` +
+        `Jadwal sudah dibuat tapi *belum di-approve* oleh kepala department.\n` +
+        `Mohon tunggu pengumuman resmi sebelum mengikuti jadwal ini.\n\n` +
+        `_Status saat ini: ${schedRow.status}_`,
+        { parse_mode: 'Markdown' }
+      );
+    }
     try {
       const png = await renderSnapshot(staff.department_id, staff.id, [today.toISOString().slice(0, 10)], `JADWAL TIM — ${deptName} (${monthLabel})`);
-      if (!png) return ctx.reply(`ℹ️ Belum ada jadwal untuk department ${deptName} di ${monthLabel}.`);
+      if (!png) return ctx.reply(`ℹ️ Belum ada data jadwal harian untuk department ${deptName} di ${monthLabel}.`);
       await ctx.replyWithPhoto(new InputFile(png, 'jadwal.png'), {
-        caption: `📅 *Jadwal ${deptName}* — ${monthLabel}\n\n_Tip: ketik /jadwal YYYY-MM untuk bulan lain (contoh: /jadwal 2026-05)_`,
+        caption: `📅 *Jadwal ${deptName}* — ${monthLabel} ✅ _approved_\n\n_Tip: ketik /jadwal YYYY-MM untuk bulan lain (contoh: /jadwal 2026-05)_`,
         parse_mode: 'Markdown',
       });
     } catch (e) {
