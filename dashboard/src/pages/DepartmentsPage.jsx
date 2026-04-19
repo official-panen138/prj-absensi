@@ -19,7 +19,7 @@ export default function DepartmentsPage({ token }) {
 
   useEffect(() => { fetchDepts(); }, [fetchDepts]);
 
-  const openAdd = () => { setForm({ name: '', head_telegram_id: '', head_username: '', monitor_group_chat_id: '' }); setModal('add'); };
+  const openAdd = () => { setForm({ name: '', head_telegram_id: '', head_username: '', assistant_telegram_id: '', assistant_username: '', monitor_group_chat_id: '' }); setModal('add'); };
   const openEdit = (d) => { setForm({ ...d }); setModal(d); };
 
   const save = async () => {
@@ -59,7 +59,7 @@ export default function DepartmentsPage({ token }) {
           <table className="w-full border-collapse text-xs">
             <thead>
               <tr className="bg-gray-800">
-                {['Name', 'Slug', 'Head TG ID', 'Head Username', 'Group Chat ID', 'Staff', 'Aksi'].map((h) => <th key={h} className={thCls}>{h}</th>)}
+                {['Name', 'Slug', 'Head TG', 'Head User', 'Asisten TG', 'Asisten User', 'Group Chat', 'Staff', 'Aksi'].map((h) => <th key={h} className={thCls}>{h}</th>)}
               </tr>
             </thead>
             <tbody>
@@ -69,6 +69,8 @@ export default function DepartmentsPage({ token }) {
                   <td className={`${tdCls} font-mono text-[11px] text-gray-400`}>{d.slug || '—'}</td>
                   <td className={`${tdCls} font-mono text-[11px]`}>{d.head_telegram_id || <span className="text-gray-500">—</span>}</td>
                   <td className={`${tdCls} font-mono text-[11px]`}>{d.head_username ? `@${d.head_username}` : <span className="text-gray-500">—</span>}</td>
+                  <td className={`${tdCls} font-mono text-[11px]`}>{d.assistant_telegram_id || <span className="text-gray-500">—</span>}</td>
+                  <td className={`${tdCls} font-mono text-[11px]`}>{d.assistant_username ? `@${d.assistant_username}` : <span className="text-gray-500">—</span>}</td>
                   <td className={`${tdCls} font-mono text-[11px]`}>{d.monitor_group_chat_id || <span className="text-gray-500">tenant default</span>}</td>
                   <td className={tdCls}><Badge color="emerald">{d.staff_count || 0}</Badge></td>
                   <td className={tdCls}>
@@ -77,7 +79,7 @@ export default function DepartmentsPage({ token }) {
                   </td>
                 </tr>
               ))}
-              {items.length === 0 && <tr><td colSpan={7} className={`${tdCls} text-center text-gray-500 py-10`}>Belum ada department.</td></tr>}
+              {items.length === 0 && <tr><td colSpan={9} className={`${tdCls} text-center text-gray-500 py-10`}>Belum ada department.</td></tr>}
             </tbody>
           </table>
         )}
@@ -89,6 +91,8 @@ export default function DepartmentsPage({ token }) {
           <FormRow label="SLUG" note="auto-generate kalau kosong"><input className={inputCls} value={form.slug || ''} onChange={(e) => setForm((f) => ({ ...f, slug: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_') }))} placeholder="customer_service" /></FormRow>
           <FormRow label="HEAD TELEGRAM ID" note="DM @userinfobot untuk dapat ID"><input className={`${inputCls} font-mono`} value={form.head_telegram_id || ''} onChange={(e) => setForm((f) => ({ ...f, head_telegram_id: e.target.value }))} placeholder="123456789" /></FormRow>
           <FormRow label="HEAD USERNAME" note="opsional, untuk display"><input className={inputCls} value={form.head_username || ''} onChange={(e) => setForm((f) => ({ ...f, head_username: e.target.value.replace(/^@/, '') }))} placeholder="kepala_cs" /></FormRow>
+          <FormRow label="ASISTEN TELEGRAM ID" note="wakil kepala — ikut di-tag di notif"><input className={`${inputCls} font-mono`} value={form.assistant_telegram_id || ''} onChange={(e) => setForm((f) => ({ ...f, assistant_telegram_id: e.target.value }))} placeholder="987654321" /></FormRow>
+          <FormRow label="ASISTEN USERNAME" note="opsional, untuk display"><input className={inputCls} value={form.assistant_username || ''} onChange={(e) => setForm((f) => ({ ...f, assistant_username: e.target.value.replace(/^@/, '') }))} placeholder="asisten_cs" /></FormRow>
           <FormRow label="MONITOR GROUP CHAT ID" note="kosong = pakai tenant default"><input className={`${inputCls} font-mono`} value={form.monitor_group_chat_id || ''} onChange={(e) => setForm((f) => ({ ...f, monitor_group_chat_id: e.target.value }))} placeholder="-1001234567890" /></FormRow>
         </div>
         <div className="flex gap-2 justify-end mt-2">

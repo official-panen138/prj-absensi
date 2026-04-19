@@ -587,7 +587,7 @@ export async function pushBreakQRToMonitor(tenantId, breakLog, staff) {
 
 function getDeptInfo(deptId) {
   if (!deptId) return null;
-  return db.prepare('SELECT id, name, head_telegram_id, head_username, monitor_group_chat_id FROM departments WHERE id = ?').get(deptId);
+  return db.prepare('SELECT id, name, head_telegram_id, head_username, assistant_telegram_id, assistant_username, monitor_group_chat_id FROM departments WHERE id = ?').get(deptId);
 }
 
 // Resolve target chat: dept's own group → tenant default group
@@ -597,16 +597,24 @@ function resolveTargetChatId(tenantId, deptId) {
   return readTenantConfig(tenantId).monitorGroupId;
 }
 
-// Build mention prefix tag head dept (deep link mention selalu nge-ping walau user belum kasih username)
+// Build mention prefix tag head + asisten dept (deep link mention selalu nge-ping walau user belum kasih username)
 function buildHeadMention(deptId) {
   const dept = getDeptInfo(deptId);
   if (!dept) return '';
+  const mentions = [];
   if (dept.head_telegram_id) {
     const name = dept.head_username || dept.name + ' Head';
-    return `[${name}](tg://user?id=${dept.head_telegram_id}) `;
+    mentions.push(`[${name}](tg://user?id=${dept.head_telegram_id})`);
+  } else if (dept.head_username) {
+    mentions.push(`@${dept.head_username}`);
   }
-  if (dept.head_username) return `@${dept.head_username} `;
-  return '';
+  if (dept.assistant_telegram_id) {
+    const name = dept.assistant_username || dept.name + ' Assistant';
+    mentions.push(`[${name}](tg://user?id=${dept.assistant_telegram_id})`);
+  } else if (dept.assistant_username) {
+    mentions.push(`@${dept.assistant_username}`);
+  }
+  return mentions.length ? mentions.join(' ') + ' ' : '';
 }
 
 async function notifyMonitor(tenantId, text, deptId = null, opts = {}) {

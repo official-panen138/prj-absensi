@@ -209,6 +209,15 @@ function migrateV2_MultiTenant() {
     );
     CREATE INDEX IF NOT EXISTS idx_dept_tenant ON departments(tenant_id);
   `);
+  // departments: assistant (wakil kepala) — additive migration
+  if (!hasColumn('departments', 'assistant_telegram_id')) {
+    db.exec('ALTER TABLE departments ADD COLUMN assistant_telegram_id TEXT');
+    console.log('[db] added assistant_telegram_id to departments');
+  }
+  if (!hasColumn('departments', 'assistant_username')) {
+    db.exec('ALTER TABLE departments ADD COLUMN assistant_username TEXT');
+    console.log('[db] added assistant_username to departments');
+  }
 
   // staff: tambah department_id (FK ke departments) — kolom department TEXT tetap untuk backward compat
   if (!hasColumn('staff', 'department_id')) {

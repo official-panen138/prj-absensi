@@ -134,7 +134,8 @@ app.delete('/api/tenants/:id', auth, requireSuperAdmin, (req, res) => {
 app.get('/api/departments', auth, (req, res) => {
   const sc = scopeTenant(req);
   const rows = db.prepare(`
-    SELECT d.id, d.tenant_id, d.name, d.slug, d.head_telegram_id, d.head_username, d.monitor_group_chat_id, d.created_at,
+    SELECT d.id, d.tenant_id, d.name, d.slug, d.head_telegram_id, d.head_username,
+           d.assistant_telegram_id, d.assistant_username, d.monitor_group_chat_id, d.created_at,
            (SELECT COUNT(*) FROM staff s WHERE s.department_id = d.id AND s.is_active = 1) AS staff_count
     FROM departments d
     WHERE 1=1${sc.clause}
@@ -146,12 +147,12 @@ app.get('/api/departments', auth, (req, res) => {
 app.post('/api/departments', auth, (req, res) => {
   const tid = writeTenantId(req);
   if (!tid) return fail(res, 400, 'No tenant context');
-  const { name, slug, head_telegram_id, head_username, monitor_group_chat_id } = req.body || {};
+  const { name, slug, head_telegram_id, head_username, assistant_telegram_id, assistant_username, monitor_group_chat_id } = req.body || {};
   if (!name || !String(name).trim()) return fail(res, 400, 'Name required');
   const finalSlug = (slug || String(name)).toLowerCase().trim().replace(/[^a-z0-9]+/g, '_');
   try {
-    const r = db.prepare('INSERT INTO departments(tenant_id,name,slug,head_telegram_id,head_username,monitor_group_chat_id) VALUES(?,?,?,?,?,?)')
-      .run(tid, String(name).trim(), finalSlug, head_telegram_id || null, head_username || null, monitor_group_chat_id || null);
+    const r = db.prepare('INSERT INTO departments(tenant_id,name,slug,head_telegram_id,head_username,assistant_telegram_id,assistant_username,monitor_group_chat_id) VALUES(?,?,?,?,?,?,?,?)')
+      .run(tid, String(name).trim(), finalSlug, head_telegram_id || null, head_username || null, assistant_telegram_id || null, assistant_username || null, monitor_group_chat_id || null);
     ok(res, { id: r.lastInsertRowid });
   } catch (e) { fail(res, 400, e.message); }
 });
@@ -161,7 +162,7 @@ app.put('/api/departments/:id', auth, (req, res) => {
   const sc = scopeTenant(req);
   const existing = db.prepare('SELECT id FROM departments WHERE id = ?' + sc.clause).get(id, ...sc.params);
   if (!existing) return fail(res, 404, 'Not found or not in your tenant');
-  const allowed = ['name', 'slug', 'head_telegram_id', 'head_username', 'monitor_group_chat_id'];
+  const allowed = ['name', 'slug', 'head_telegram_id', 'head_username', 'assistant_telegram_id', 'assistant_username', 'monitor_group_chat_id'];
   const fields = [], values = [];
   for (const k of allowed) if (k in req.body) { fields.push(`${k} = ?`); values.push(req.body[k] || null); }
   if (!fields.length) return ok(res, { id });
