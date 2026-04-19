@@ -449,6 +449,71 @@ export async function notifyIpViolation(tenantId, staff, action, ip) {
   );
 }
 
+// Build snapshot jadwal dept untuk minggu yang berisi focusDate
+// markedDates di-tandai * di baris requester. Return string code-block siap dikirim.
+function formatScheduleSnapshot(deptId, requesterId, markedDates = []) {
+  const dept = deptId ? db.prepare('SELECT name FROM departments WHERE id = ?').get(deptId) : null;
+  const focusDate = markedDates[0];
+  if (!focusDate) return '';
+  // Cari Senin minggu yang berisi focusDate
+  const focus = new Date(focusDate + 'T00:00:00');
+  const dow = focus.getDay(); // 0=Sun..6=Sat
+  const offsetToMonday = (dow + 6) % 7;
+  const monday = new Date(focus);
+  monday.setDate(focus.getDate() - offsetToMonday);
+  const dates = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    return d.toISOString().slice(0, 10);
+  });
+  const dayLabels = ['Sn', 'Sl', 'Rb', 'Km', 'Jm', 'Sb', 'Mg'];
+
+  // Ambil staff aktif dept
+  const staff = deptId
+    ? db.prepare('SELECT id, name FROM staff WHERE department_id = ? AND is_active = 1 AND is_approved = 1 ORDER BY name').all(deptId)
+    : [{ id: requesterId, name: db.prepare('SELECT name FROM staff WHERE id = ?').get(requesterId)?.name || 'Staff' }];
+  if (!staff.length) return '';
+
+  // Ambil schedule untuk semua staff di range tanggal
+  const sIds = staff.map((s) => s.id);
+  const sPlace = sIds.map(() => '?').join(',');
+  const dPlace = dates.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT staff_id, date, status, shift FROM schedule_daily WHERE staff_id IN (${sPlace}) AND date IN (${dPlace})`)
+    .all(...sIds, ...dates);
+  const sched = {};
+  rows.forEach((r) => { sched[`${r.staff_id}_${r.date}`] = r; });
+
+  // Format
+  const cellW = 4;
+  const nameW = Math.min(14, Math.max(10, ...staff.map((s) => s.name.length)));
+  const padR = (s, w) => String(s).slice(0, w).padEnd(w);
+  const symbolFor = (sd) => {
+    if (!sd) return '·';
+    if (sd.status === 'work') return sd.shift === 'morning' ? 'M' : sd.shift === 'middle' ? 'D' : 'N';
+    if (sd.status === 'off') return 'OFF';
+    if (sd.status === 'sick') return 'SCK';
+    if (sd.status === 'leave') return 'LV';
+    return '?';
+  };
+
+  let txt = '```\n';
+  if (dept) txt += `${dept.name} — week ${dates[0].slice(5)}\n`;
+  txt += padR('', nameW) + ' ' + dayLabels.map((d) => padR(d, cellW)).join('') + '\n';
+  txt += padR('', nameW) + ' ' + dates.map((d) => padR(d.slice(8, 10), cellW)).join('') + '\n';
+  staff.forEach((s) => {
+    const isReq = s.id === requesterId;
+    const namePrefix = (isReq ? '▶ ' : '  ') + s.name;
+    const cells = dates.map((d) => {
+      let sym = symbolFor(sched[`${s.id}_${d}`]);
+      if (markedDates.includes(d) && isReq) sym = sym + '*';
+      return padR(sym, cellW);
+    });
+    txt += padR(namePrefix, nameW) + ' ' + cells.join('') + '\n';
+  });
+  txt += '```\n_M=Morning · D=Middle · N=Night · OFF · SCK=Sick · LV=Leave_\n_▶ = requester · \\* = tanggal terdampak_';
+  return txt;
+}
+
 export async function notifySwapRequest(tenantId, requester, partner, targetDate, partnerDate, currentShift, reason, swapId, swapType) {
   const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
   if (muted.includes('shift_swap')) return;
@@ -483,6 +548,15 @@ export async function notifySwapRequest(tenantId, requester, partner, targetDate
     .text('❌ Reject', `swap_reject_${swapId}`);
   try {
     await entry.bot.api.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: kb });
+    // Snapshot jadwal — untuk sick & move_off (trade biasanya admin sudah tahu)
+    if (swapType === 'sick' || swapType === 'move_off') {
+      const marked = swapType === 'move_off' ? [targetDate, partnerDate].filter(Boolean) : [targetDate];
+      const snap = formatScheduleSnapshot(requester.department_id, requester.id, marked);
+      if (snap) {
+        try { await entry.bot.api.sendMessage(chatId, snap, { parse_mode: 'Markdown' }); }
+        catch (e) { console.warn('[bot] snapshot send failed:', e.message); }
+      }
+    }
   } catch (e) { console.warn('[bot] notifySwapRequest failed:', e.message); }
 }
 
