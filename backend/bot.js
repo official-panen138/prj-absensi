@@ -185,6 +185,56 @@ function attachHandlers(bot, tenantId) {
     await ctx.answerCallbackQuery({ text: '✅ Approved!' });
   });
 
+  bot.callbackQuery(/^swap_approve_(\d+)$/, async (ctx) => {
+    const swapId = parseInt(ctx.match[1]);
+    if (!isAdmin(tenantId, ctx.from.id)) return ctx.answerCallbackQuery({ text: '⛔ Unauthorized', show_alert: true });
+    const sw = db.prepare('SELECT * FROM swap_requests WHERE id = ? AND tenant_id = ?').get(swapId, tenantId);
+    if (!sw) return ctx.answerCallbackQuery({ text: 'Swap tidak ditemukan', show_alert: true });
+    if (sw.status !== 'pending') return ctx.answerCallbackQuery({ text: 'Sudah diproses sebelumnya', show_alert: true });
+    // Apply schedule update
+    if (sw.target_staff_id) {
+      const partnerDate = sw.partner_date || sw.target_date;
+      const reqSched = db.prepare('SELECT shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.requester_id, sw.target_date);
+      const partnerSched = db.prepare('SELECT shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.target_staff_id, partnerDate);
+      if (!reqSched || !partnerSched) return ctx.answerCallbackQuery({ text: 'Schedule sudah berubah', show_alert: true });
+      db.transaction(() => {
+        db.prepare('UPDATE schedule_daily SET shift = ?, is_manual_override = 1 WHERE staff_id = ? AND date = ?').run(partnerSched.shift, sw.requester_id, sw.target_date);
+        db.prepare('UPDATE schedule_daily SET shift = ?, is_manual_override = 1 WHERE staff_id = ? AND date = ?').run(reqSched.shift, sw.target_staff_id, partnerDate);
+      })();
+    } else {
+      db.prepare(`INSERT INTO schedule_daily(tenant_id,staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,'off','morning',1)
+                  ON CONFLICT(staff_id,date) DO UPDATE SET status='off', is_manual_override=1`)
+        .run(sw.tenant_id, sw.requester_id, sw.target_date);
+    }
+    db.prepare('UPDATE swap_requests SET status = ? WHERE id = ?').run('approved', swapId);
+    emitLiveUpdate(tenantId, 'swap_approved', { swap_id: swapId });
+    // Notify requester
+    const requester = db.prepare('SELECT name, telegram_id FROM staff WHERE id = ?').get(sw.requester_id);
+    if (requester?.telegram_id) {
+      const typeLabel = sw.target_staff_id ? 'Swap (Trade)' : 'Request OFF';
+      try { await bot.api.sendMessage(requester.telegram_id, `✅ *${typeLabel}* untuk *${sw.target_date}* di-approve!`, { parse_mode: 'Markdown', reply_markup: openMiniAppKeyboard(tenantId) }); } catch {}
+    }
+    const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
+    await ctx.editMessageText(`✅ *Swap APPROVED*\n_oleh ${by}_`, { parse_mode: 'Markdown' });
+    await ctx.answerCallbackQuery({ text: '✅ Approved!' });
+  });
+
+  bot.callbackQuery(/^swap_reject_(\d+)$/, async (ctx) => {
+    const swapId = parseInt(ctx.match[1]);
+    if (!isAdmin(tenantId, ctx.from.id)) return ctx.answerCallbackQuery({ text: '⛔ Unauthorized', show_alert: true });
+    const sw = db.prepare('SELECT * FROM swap_requests WHERE id = ? AND tenant_id = ?').get(swapId, tenantId);
+    if (!sw) return ctx.answerCallbackQuery({ text: 'Swap tidak ditemukan', show_alert: true });
+    if (sw.status !== 'pending') return ctx.answerCallbackQuery({ text: 'Sudah diproses', show_alert: true });
+    db.prepare('UPDATE swap_requests SET status = ?, reject_reason = ? WHERE id = ?').run('rejected', '', swapId);
+    const requester = db.prepare('SELECT name, telegram_id FROM staff WHERE id = ?').get(sw.requester_id);
+    if (requester?.telegram_id) {
+      try { await bot.api.sendMessage(requester.telegram_id, `❌ Swap request Anda untuk ${sw.target_date} *ditolak* oleh admin.`, { parse_mode: 'Markdown' }); } catch {}
+    }
+    const by = ctx.from.first_name || ctx.from.username || ctx.from.id;
+    await ctx.editMessageText(`❌ *Swap REJECTED*\n_oleh ${by}_`, { parse_mode: 'Markdown' });
+    await ctx.answerCallbackQuery({ text: '❌ Rejected' });
+  });
+
   bot.callbackQuery(/^reject_(\d+)$/, async (ctx) => {
     const staffId = parseInt(ctx.match[1]);
     if (!isAdmin(tenantId, ctx.from.id)) return ctx.answerCallbackQuery({ text: '⛔ Unauthorized', show_alert: true });
@@ -382,6 +432,35 @@ export async function notifyIpViolation(tenantId, staff, action, ip) {
     `IP: \`${ip}\``,
     staff.department_id
   );
+}
+
+export async function notifySwapRequest(tenantId, requester, partner, targetDate, partnerDate, currentShift, reason, swapId) {
+  const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
+  if (muted.includes('shift_swap')) return;
+  const entry = runningBots.get(tenantId);
+  if (!entry) return;
+  const chatId = resolveTargetChatId(tenantId, requester.department_id);
+  if (!chatId) return;
+  const mention = buildHeadMention(requester.department_id);
+  const dept = requester.department ? ` · ${requester.department}` : '';
+  let text;
+  if (partner) {
+    text = `${mention}🔄 *SWAP REQUEST (Trade)*\n\n` +
+      `👤 ${requester.name}${dept}\n📅 ${targetDate} _(${currentShift})_\n` +
+      `        ↕️\n` +
+      `👤 ${partner.name}\n📅 ${partnerDate || targetDate}` +
+      (reason ? `\n\n💬 ${reason}` : '');
+  } else {
+    text = `${mention}🔄 *REQUEST OFF*\n\n` +
+      `👤 ${requester.name}${dept}\n📅 ${targetDate} _(${currentShift})_` +
+      (reason ? `\n\n💬 ${reason}` : '');
+  }
+  const kb = new InlineKeyboard()
+    .text('✅ Approve', `swap_approve_${swapId}`)
+    .text('❌ Reject', `swap_reject_${swapId}`);
+  try {
+    await entry.bot.api.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: kb });
+  } catch (e) { console.warn('[bot] notifySwapRequest failed:', e.message); }
 }
 
 export async function notifyOvertime(tenantId, staff, breakType, durationMin, limitMin) {

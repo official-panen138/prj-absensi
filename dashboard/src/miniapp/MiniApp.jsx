@@ -62,6 +62,23 @@ export default function MiniApp() {
   const [info, setInfo] = useState('');
   const [now, setNow] = useState(Date.now());
   const [popup, setPopup] = useState(null);
+  const [showSwap, setShowSwap] = useState(false);
+  const [swapForm, setSwapForm] = useState({ type: 'off', target_date: '', reason: '', target_staff_id: '', partner_date: '' });
+  const [colleagues, setColleagues] = useState([]);
+  const [partnerShift, setPartnerShift] = useState(null);
+
+  useEffect(() => {
+    if (showSwap && colleagues.length === 0 && token) {
+      api('/colleagues', token).then((r) => setColleagues(r.data || [])).catch(() => {});
+    }
+  }, [showSwap, token, colleagues.length]);
+
+  useEffect(() => {
+    if (swapForm.type === 'trade' && swapForm.target_staff_id && (swapForm.partner_date || swapForm.target_date) && token) {
+      const d = swapForm.partner_date || swapForm.target_date;
+      api(`/colleagues/${swapForm.target_staff_id}/shift/${d}`, token).then((r) => setPartnerShift(r.data || null)).catch(() => setPartnerShift(null));
+    } else { setPartnerShift(null); }
+  }, [swapForm.type, swapForm.target_staff_id, swapForm.partner_date, swapForm.target_date, token]);
 
   useEffect(() => {
     const iv = setInterval(() => setNow(Date.now()), 1000);
@@ -362,6 +379,88 @@ export default function MiniApp() {
           )}
         </div>
       )}
+
+      {/* Request Swap Section */}
+      <div style={{marginTop:18,paddingTop:14,borderTop:'1px solid rgb(31 41 55)'}}>
+        <button
+          onClick={() => setShowSwap(!showSwap)}
+          style={{width:'100%',padding:'10px',background:'transparent',border:'1px solid rgb(55 65 81)',borderRadius:10,color:'#9ca3af',fontSize:13,cursor:'pointer'}}
+        >
+          🔄 {showSwap ? 'Tutup' : 'Request Swap / Off'}
+        </button>
+        {showSwap && (
+          <div style={{marginTop:12,padding:14,background:'rgb(31 41 55)',borderRadius:12,border:'1px solid rgb(55 65 81)'}}>
+            <div style={{display:'flex',gap:8,marginBottom:12}}>
+              <button onClick={() => setSwapForm((f) => ({ ...f, type: 'off' }))}
+                style={{flex:1,padding:'8px',borderRadius:8,border:'none',cursor:'pointer',
+                  background: swapForm.type === 'off' ? '#dc2626' : '#374151',
+                  color:'#fff',fontSize:12,fontWeight:600}}>📅 Request OFF</button>
+              <button onClick={() => setSwapForm((f) => ({ ...f, type: 'trade' }))}
+                style={{flex:1,padding:'8px',borderRadius:8,border:'none',cursor:'pointer',
+                  background: swapForm.type === 'trade' ? '#2563eb' : '#374151',
+                  color:'#fff',fontSize:12,fontWeight:600}}>🔄 Trade Shift</button>
+            </div>
+
+            <div style={{marginBottom:10}}>
+              <div style={{fontSize:10,color:'#9ca3af',marginBottom:4,letterSpacing:1}}>TANGGAL ANDA</div>
+              <input type="date" value={swapForm.target_date} onChange={(e) => setSwapForm((f) => ({ ...f, target_date: e.target.value }))}
+                style={{width:'100%',padding:'10px',borderRadius:8,border:'1px solid rgb(55 65 81)',background:'rgb(17 24 39)',color:'#f3f4f6',fontSize:13}} />
+            </div>
+
+            {swapForm.type === 'trade' && (
+              <>
+                <div style={{marginBottom:10}}>
+                  <div style={{fontSize:10,color:'#9ca3af',marginBottom:4,letterSpacing:1}}>PARTNER (rekan dept)</div>
+                  <select value={swapForm.target_staff_id} onChange={(e) => setSwapForm((f) => ({ ...f, target_staff_id: e.target.value }))}
+                    style={{width:'100%',padding:'10px',borderRadius:8,border:'1px solid rgb(55 65 81)',background:'rgb(17 24 39)',color:'#f3f4f6',fontSize:13}}>
+                    <option value="">— Pilih partner —</option>
+                    {colleagues.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                  {colleagues.length === 0 && <div style={{fontSize:11,color:'#9ca3af',marginTop:4}}>Tidak ada rekan di department Anda.</div>}
+                </div>
+                <div style={{marginBottom:10}}>
+                  <div style={{fontSize:10,color:'#9ca3af',marginBottom:4,letterSpacing:1}}>TANGGAL PARTNER (kosong = sama dengan tanggal Anda)</div>
+                  <input type="date" value={swapForm.partner_date} onChange={(e) => setSwapForm((f) => ({ ...f, partner_date: e.target.value }))}
+                    style={{width:'100%',padding:'10px',borderRadius:8,border:'1px solid rgb(55 65 81)',background:'rgb(17 24 39)',color:'#f3f4f6',fontSize:13}} />
+                  {partnerShift && (
+                    <div style={{fontSize:11,marginTop:4,color: partnerShift.status === 'work' ? '#34d399' : '#fb7185'}}>
+                      Jadwal partner: {partnerShift.status === 'work' ? `${partnerShift.shift} (work)` : partnerShift.status?.toUpperCase()}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
+            <div style={{marginBottom:10}}>
+              <div style={{fontSize:10,color:'#9ca3af',marginBottom:4,letterSpacing:1}}>ALASAN (opsional)</div>
+              <textarea value={swapForm.reason} onChange={(e) => setSwapForm((f) => ({ ...f, reason: e.target.value }))}
+                placeholder="Acara keluarga / sakit / dll"
+                style={{width:'100%',padding:'10px',borderRadius:8,border:'1px solid rgb(55 65 81)',background:'rgb(17 24 39)',color:'#f3f4f6',fontSize:13,minHeight:60,resize:'vertical'}} />
+            </div>
+
+            <Btn color={swapForm.type === 'off' ? 'red' : 'emerald'} onClick={async () => {
+              if (!swapForm.target_date) { setErr('Pilih tanggal Anda'); return; }
+              if (swapForm.type === 'trade' && !swapForm.target_staff_id) { setErr('Pilih partner'); return; }
+              const body = {
+                target_date: swapForm.target_date,
+                reason: swapForm.reason,
+                target_staff_id: swapForm.type === 'trade' ? +swapForm.target_staff_id : null,
+                partner_date: swapForm.type === 'trade' ? (swapForm.partner_date || null) : null,
+              };
+              try {
+                setBusy(true);
+                await api('/swap-request', token, { method: 'POST', body });
+                setInfo('✓ Request dikirim ke admin. Tunggu approval di Telegram.');
+                setSwapForm({ type: 'off', target_date: '', reason: '', target_staff_id: '', partner_date: '' });
+                setShowSwap(false);
+              } catch (e) { setErr(e.message); }
+              finally { setBusy(false); }
+            }} disabled={busy}>
+              📤 Submit {swapForm.type === 'off' ? 'Request OFF' : 'Trade Request'}
+            </Btn>
+          </div>
+        )}
+      </div>
 
       <div style={{textAlign:'center',marginTop:24,fontSize:10,color:'#4b5563',fontFamily:'monospace'}}>
         SECURE_ACCESS // STAFF_PANEL

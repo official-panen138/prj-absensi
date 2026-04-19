@@ -244,6 +244,16 @@ function migrateV2_MultiTenant() {
     }
   } catch (e) { console.warn('[db] dept backfill:', e.message); }
 
+  // swap_requests: tambah target_staff_id (NULL = type off, set = type trade) + partner_date
+  if (!hasColumn('swap_requests', 'target_staff_id')) {
+    db.exec('ALTER TABLE swap_requests ADD COLUMN target_staff_id INTEGER');
+    console.log('[db] added target_staff_id to swap_requests');
+  }
+  if (!hasColumn('swap_requests', 'partner_date')) {
+    db.exec('ALTER TABLE swap_requests ADD COLUMN partner_date TEXT');
+    console.log('[db] added partner_date to swap_requests');
+  }
+
   // dept_break_settings & dept_shifts: per-department override
   // (kalau dept tidak punya override, fallback ke break_settings/shifts tenant default)
   db.exec(`
