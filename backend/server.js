@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { db, getSetting, setSetting, getDefaultTenantId, getTenantSetting, setTenantSetting } from './db.js';
-import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest, pushSwapResultSnapshot, notifyLeaveRequest } from './bot.js';
+import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest, pushSwapResultSnapshot, notifyLeaveRequest, pushLeaveResultSnapshot } from './bot.js';
 import { liveBus, emitLiveUpdate } from './events.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -794,6 +794,7 @@ app.put('/api/leave/:id/approve', auth, (req, res) => {
     db.prepare("UPDATE leave_requests SET status = 'approved', decided_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
   })();
   emitLiveUpdate(lr.tenant_id, 'leave_approved', { leave_id: id });
+  pushLeaveResultSnapshot(lr.tenant_id, lr).catch(() => {});
   ok(res, { id });
 });
 app.put('/api/leave/:id/reject', auth, (req, res) => {

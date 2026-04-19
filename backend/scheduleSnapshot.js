@@ -132,6 +132,18 @@ function applyMoveOffPreview(sched, requesterId, originalOffDate, newOffDate, fa
   return next;
 }
 
+function applyLeavePreview(sched, requesterId, startDate, endDate) {
+  const next = { ...sched };
+  const start = new Date(startDate + 'T00:00:00').getTime();
+  const end = new Date(endDate + 'T00:00:00').getTime();
+  for (let t = start; t <= end; t += 86400000) {
+    const d = new Date(t).toISOString().slice(0, 10);
+    const key = `${requesterId}_${d}`;
+    next[key] = { ...(next[key] || {}), status: 'leave', shift: next[key]?.shift || 'morning', staff_id: requesterId, date: d };
+  }
+  return next;
+}
+
 function applyTradePreview(sched, reqId, partnerId, reqDate, partnerDate) {
   const next = { ...sched };
   const k1 = `${reqId}_${reqDate}`;
@@ -217,4 +229,41 @@ export async function renderTradePair(deptId, requesterId, partnerId, reqDate, p
   const afterSched = applyTradePreview(sched, requesterId, partnerId, reqDate, partnerDate);
   const after = await svgToPng(renderSvg({ staff, dates, sched: afterSched, marked, title: `AFTER — Trade ${reqDate} <-> ${partnerDate}`, requesterId }));
   return { before, after };
+}
+
+// Range tanggal yang dimaksud
+function datesInRange(startDate, endDate) {
+  const out = [];
+  const s = new Date(startDate + 'T00:00:00').getTime();
+  const e = new Date(endDate + 'T00:00:00').getTime();
+  for (let t = s; t <= e; t += 86400000) out.push(new Date(t).toISOString().slice(0, 10));
+  return out;
+}
+
+export async function renderLeavePair(deptId, requesterId, startDate, endDate, deptName, days) {
+  const m1 = getMonthKey(startDate);
+  const m2 = getMonthKey(endDate);
+  const range = datesInRange(startDate, endDate);
+  const buildPair = async (focus) => {
+    const { staff, dates, sched } = fetchScheduleData(deptId, requesterId, focus);
+    if (!staff.length) return { before: null, after: null };
+    const marked = { [requesterId]: range.filter((d) => dates.includes(d)) };
+    const monthLabel = dates[0].slice(0, 7);
+    const before = await svgToPng(renderSvg({
+      staff, dates, sched, marked,
+      title: `BEFORE — ${deptName || 'Schedule'} (${monthLabel}) · Cuti ${startDate}→${endDate} (${days}h)`,
+      requesterId,
+    }));
+    const afterSched = applyLeavePreview(sched, requesterId, startDate, endDate);
+    const after = await svgToPng(renderSvg({
+      staff, dates, sched: afterSched, marked,
+      title: `AFTER — Cuti ${startDate}→${endDate} (${monthLabel})`,
+      requesterId,
+    }));
+    return { before, after };
+  };
+  const first = await buildPair(startDate);
+  if (m1 === m2) return first;
+  const second = await buildPair(endDate);
+  return { ...first, beforeWk2: second.before, afterWk2: second.after };
 }

@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import QRCode from 'qrcode';
 import { db, getTenantSetting, getDefaultTenantId } from './db.js';
 import { emitLiveUpdate } from './events.js';
-import { renderSickPair, renderMoveOffPair, renderTradePair, renderSnapshot, renderSnapshotMulti } from './scheduleSnapshot.js';
+import { renderSickPair, renderMoveOffPair, renderTradePair, renderSnapshot, renderSnapshotMulti, renderLeavePair } from './scheduleSnapshot.js';
 
 const DEPARTMENTS = ['Customer Service', 'Finance', 'Captain', 'SEO Marketing', 'Social Media Marketing', 'CRM', 'Telemarketing'];
 const CATEGORIES = [{ key: 'indonesian', label: 'Indonesian' }, { key: 'local', label: 'Cambodian' }];
@@ -363,6 +363,7 @@ function attachHandlers(bot, tenantId) {
     const newText = orig + `\n\n━━━━━━━━━━━━\n✅ APPROVED oleh ${by}`;
     try { await ctx.editMessageText(newText, { reply_markup: { inline_keyboard: [] } }); } catch {}
     await ctx.answerCallbackQuery({ text: '✅ Approved!' });
+    pushLeaveResultSnapshot(tenantId, lr).catch(() => {});
   });
 
   bot.callbackQuery(/^leave_reject_(\d+)$/, async (ctx) => {
@@ -720,6 +721,24 @@ export async function notifyLeaveRequest(tenantId, requester, payload) {
   const mention = buildHeadMention(requester.department_id);
   const dept = requester.department ? ` · ${requester.department}` : '';
   const { start_date, end_date, days, reason, period_key, leave_id } = payload;
+  const deptName = requester.department || 'Schedule';
+  // Render snapshot BEFORE — kepala dapat melihat jadwal seluruh dept saat menentukan approve/reject
+  try {
+    const pair = await renderLeavePair(requester.department_id, requester.id, start_date, end_date, deptName, days);
+    if (pair?.before) {
+      await entry.bot.api.sendPhoto(chatId, new InputFile(pair.before, 'leave-before.png'), {
+        caption: `📋 *Jadwal saat ini* (${start_date.slice(0, 7)}) — kondisi sekarang sebelum cuti`,
+        parse_mode: 'Markdown',
+      });
+    }
+    if (pair?.beforeWk2) {
+      await entry.bot.api.sendPhoto(chatId, new InputFile(pair.beforeWk2, 'leave-before2.png'), {
+        caption: `📋 *Jadwal saat ini* (${end_date.slice(0, 7)}) — bulan kedua`,
+        parse_mode: 'Markdown',
+      });
+    }
+  } catch (e) { console.warn('[bot] render leave BEFORE snapshot:', e.message); }
+
   const text = `${mention}🏖️ *PENGAJUAN CUTI*\n\n` +
     `👤 ${requester.name}${dept}\n` +
     `📅 ${start_date} → ${end_date}\n` +
@@ -731,6 +750,37 @@ export async function notifyLeaveRequest(tenantId, requester, payload) {
   try {
     await entry.bot.api.sendMessage(chatId, text, { parse_mode: 'Markdown', reply_markup: kb });
   } catch (e) { console.warn('[bot] notifyLeaveRequest send notif failed:', e.message); }
+}
+
+// Dipanggil SETELAH leave di-approve. Render snapshot dari DB state sekarang.
+export async function pushLeaveResultSnapshot(tenantId, lr) {
+  const entry = runningBots.get(tenantId);
+  if (!entry) return;
+  const requester = db.prepare('SELECT * FROM staff WHERE id = ?').get(lr.staff_id);
+  if (!requester) return;
+  const chatId = resolveTargetChatId(tenantId, requester.department_id);
+  if (!chatId) return;
+  const deptName = requester.department || 'Schedule';
+  const send = async (buf, caption) => {
+    if (!buf) return;
+    try { await entry.bot.api.sendPhoto(chatId, new InputFile(buf, 'leave-after.png'), { caption, parse_mode: 'Markdown' }); }
+    catch (e) { console.warn('[bot] leave result snapshot send:', e.message); }
+  };
+  try {
+    const m1 = lr.start_date.slice(0, 7);
+    const m2 = lr.end_date.slice(0, 7);
+    const datesMarked = [];
+    const start = new Date(lr.start_date + 'T00:00:00').getTime();
+    const end = new Date(lr.end_date + 'T00:00:00').getTime();
+    for (let t = start; t <= end; t += 86400000) datesMarked.push(new Date(t).toISOString().slice(0, 10));
+
+    const img1 = await renderSnapshot(requester.department_id, requester.id, datesMarked, `AFTER APPROVE — Cuti ${lr.start_date}→${lr.end_date} (${m1}, ${deptName})`);
+    await send(img1, `✅ *Setelah approve* — cuti ${lr.start_date} → ${lr.end_date} (${lr.days} hari)`);
+    if (m1 !== m2) {
+      const img2 = await renderSnapshot(requester.department_id, requester.id, datesMarked, `AFTER APPROVE — Cuti (${m2}, ${deptName})`);
+      await send(img2, `✅ *Setelah approve* — bulan kedua (${m2})`);
+    }
+  } catch (e) { console.warn('[bot] pushLeaveResultSnapshot:', e.message); }
 }
 
 // Dipanggil SETELAH swap di-approve. Render snapshot dari DB state sekarang
