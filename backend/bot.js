@@ -562,8 +562,7 @@ export async function pushClockQRToMonitor(tenantId, qrSession, staff) {
   const isStart = qrSession.action === 'clock_in';
   const label = isStart ? '📥 *START KERJA*' : '📤 *PULANG KERJA*';
   const dept = staff.department ? ` — ${staff.department}` : '';
-  const mention = buildHeadMention(staff.department_id);
-  const caption = `${mention}${label}\n👤 *${staff.name}*${dept}\n⏰ Berlaku 5 menit · sekali pakai`;
+  const caption = `${label}\n👤 *${staff.name}*${dept}\n⏰ Berlaku 5 menit · sekali pakai`;
   try {
     await entry.bot.api.sendPhoto(chatId, new InputFile(png, `clock-${qrSession.id}.png`), { caption, parse_mode: 'Markdown' });
   } catch (e) { console.warn('[bot] pushClockQRToMonitor failed:', e.message); }
@@ -578,8 +577,7 @@ export async function pushBreakQRToMonitor(tenantId, breakLog, staff) {
   const deepLink = `https://t.me/${me.username}?start=qr_${breakLog.id}_${breakLog.qr_token}`;
   const png = await QRCode.toBuffer(deepLink, { width: 320, margin: 2 });
   const breakLabel = { smoke: '🚬 Smoke', toilet: '🚻 Toilet', outside: '🏪 Go Out' }[breakLog.type] || breakLog.type;
-  const mention = buildHeadMention(staff.department_id);
-  const caption = `${mention}${breakLabel}\n👤 *${staff.name}* — ${staff.department || '-'}\n⏰ Expires in 5 min\n\nScan QR ini untuk Back-to-Work.`;
+  const caption = `${breakLabel}\n👤 *${staff.name}* — ${staff.department || '-'}\n⏰ Expires in 5 min\n\nScan QR ini untuk Back-to-Work.`;
   try {
     await entry.bot.api.sendPhoto(chatId, new InputFile(png, `qr-${breakLog.id}.png`), { caption, parse_mode: 'Markdown' });
   } catch (e) { console.warn('[bot] pushBreakQRToMonitor failed:', e.message); }
