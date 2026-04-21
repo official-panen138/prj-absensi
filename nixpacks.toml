@@ -1,2 +1,5 @@
+[variables]
+NIXPACKS_PATH = ""
+
 [phases.setup]
 aptPkgs = ['fonts-dejavu-core', 'fonts-noto-color-emoji', 'fontconfig']
