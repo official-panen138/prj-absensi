@@ -2,4 +2,4 @@
 NIXPACKS_PATH = ""
 
 [phases.setup]
-aptPkgs = ['fonts-dejavu-core', 'fonts-noto-color-emoji', 'fontconfig']
+aptPkgs = ['fonts-dejavu-core', 'fonts-noto-color-emoji', 'fontconfig', 'python3', 'build-essential']
