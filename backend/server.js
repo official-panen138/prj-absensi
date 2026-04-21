@@ -1385,7 +1385,7 @@ app.post('/api/bot/leave-request', tgAuth, (req, res) => {
 app.post('/api/bot/clock-in-request-qr', tgAuth, async (req, res) => {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
-    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_in', clientIp).catch(() => {});
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, 'clock_in', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor untuk Start Kerja.`);
   }
   // Pre-validate prerequisites
@@ -1404,7 +1404,7 @@ app.post('/api/bot/clock-in-request-qr', tgAuth, async (req, res) => {
 app.post('/api/bot/clock-out-request-qr', tgAuth, async (req, res) => {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
-    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_out', clientIp).catch(() => {});
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, 'clock_out', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor untuk Pulang Kerja.`);
   }
   const today = todayPP();
@@ -1419,7 +1419,7 @@ app.post('/api/bot/clock-out-request-qr', tgAuth, async (req, res) => {
 app.post('/api/bot/clock-in-qr', tgAuth, (req, res) => {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
-    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_in', clientIp).catch(() => {});
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, 'clock_in', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Clock-In.`);
   }
   const r = consumeQrSession(req.staff.tenant_id, req.staff.id, 'clock_in', req.body?.qr_token);
@@ -1430,7 +1430,7 @@ app.post('/api/bot/clock-in-qr', tgAuth, (req, res) => {
 app.post('/api/bot/clock-out-qr', tgAuth, (req, res) => {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
-    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_out', clientIp).catch(() => {});
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, 'clock_out', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Clock-Out.`);
   }
   const r = consumeQrSession(req.staff.tenant_id, req.staff.id, 'clock_out', req.body?.qr_token);
@@ -1443,7 +1443,7 @@ app.post('/api/bot/clock-in', tgAuth, (req, res) => clockInImpl(req, res));
 function clockInImpl(req, res) {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
-    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_in', clientIp).catch(() => {});
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, 'clock_in', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Clock-In.`);
   }
   const today = todayPP();
@@ -1470,7 +1470,7 @@ function clockInImpl(req, res) {
   db.prepare('INSERT INTO attendance(tenant_id,staff_id,date,shift,clock_in,late_minutes,ip_address,current_status) VALUES(?,?,?,?,?,?,?,?)')
     .run(req.staff.tenant_id, req.staff.id, today, effectiveShift, now.toISOString(), lateMin, clientIp.slice(0, 45), 'working');
   if (lateMin > 0) {
-    notifyLate(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, lateMin, req.staff.current_shift).catch((e) => console.warn('[bot] notifyLate:', e.message));
+    notifyLate(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, lateMin, req.staff.current_shift).catch((e) => console.warn('[bot] notifyLate:', e.message));
   }
   emitLiveUpdate(req.staff.tenant_id, 'clock_in', { staff_id: req.staff.id });
   ok(res, { clock_in: now.toISOString(), late_minutes: lateMin });
@@ -1481,7 +1481,7 @@ app.post('/api/bot/clock-out', tgAuth, (req, res) => clockOutImpl(req, res));
 function clockOutImpl(req, res) {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
-    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'clock_out', clientIp).catch(() => {});
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, 'clock_out', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Clock-Out.`);
   }
   const today = todayPP();
@@ -1502,7 +1502,7 @@ function clockOutImpl(req, res) {
 app.post('/api/bot/break-start', tgAuth, async (req, res) => {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
-    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'break_start', clientIp).catch(() => {});
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, 'break_start', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk mulai break.`);
   }
   const { type } = req.body || {};
@@ -1559,7 +1559,7 @@ app.post('/api/bot/break-request-qr', tgAuth, async (req, res) => {
 app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
-    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'break_end', clientIp).catch(() => {});
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, 'break_end', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Back to Work.`);
   }
   const { break_id, qr_token } = req.body || {};
@@ -1579,7 +1579,7 @@ app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
               WHERE staff_id = ? AND date = ?`)
     .run('working', dur, overtime, req.staff.id, todayPP());
   if (overtime) {
-    notifyOvertime(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, bl.type, dur, bl.limit_minutes).catch((e) => console.warn('[bot] notifyOvertime:', e.message));
+    notifyOvertime(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, bl.type, dur, bl.limit_minutes).catch((e) => console.warn('[bot] notifyOvertime:', e.message));
   }
   emitLiveUpdate(req.staff.tenant_id, 'break_end', { staff_id: req.staff.id });
   ok(res, { duration_minutes: dur, is_overtime: !!overtime });
@@ -1588,7 +1588,7 @@ app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
 app.post('/api/bot/break-end', tgAuth, (req, res) => {
   const clientIp = getClientIp(req);
   if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
-    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department }, 'break_end', clientIp).catch(() => {});
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, 'break_end', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Back to Work.`);
   }
   const today = todayPP();
