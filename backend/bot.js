@@ -599,8 +599,16 @@ function resolveTargetChatId(tenantId, deptId) {
 // Priority: tenant-setting qr_monitor_group_chat_id → dept group → tenant default
 function resolveQrChatId(tenantId, deptId) {
   const qrGroup = getTenantSetting(tenantId, 'qr_monitor_group_chat_id', null);
-  if (qrGroup) return String(qrGroup);
-  return resolveTargetChatId(tenantId, deptId);
+  if (qrGroup) {
+    const v = String(qrGroup).trim();
+    if (v) {
+      console.log(`[bot] QR routed to dedicated group ${v} (tenant ${tenantId})`);
+      return v;
+    }
+  }
+  const fallback = resolveTargetChatId(tenantId, deptId);
+  console.log(`[bot] QR fallback chat=${fallback} (tenant ${tenantId}, dept ${deptId}) — qr_monitor_group_chat_id not set`);
+  return fallback;
 }
 
 // Build mention prefix tag head + asisten dept (deep link mention selalu nge-ping walau user belum kasih username)

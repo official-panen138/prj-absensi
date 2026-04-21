@@ -980,6 +980,21 @@ app.put('/api/settings/shift-times', auth, (req, res) => {
   ok(res, { department_id: deptId });
 });
 
+// Debug: cek effective QR routing untuk tenant saat ini
+app.get('/api/settings/qr-group/debug', auth, (req, res) => {
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
+  const qrGroup = getTenantSetting(tid, 'qr_monitor_group_chat_id', null);
+  const botConfig = getTenantSetting(tid, 'bot_config', {}) || {};
+  ok(res, {
+    tenant_id: tid,
+    qr_monitor_group_chat_id: qrGroup,
+    tenant_monitor_group_chat_id: botConfig.monitor_group_chat_id || null,
+    qr_routed_to: qrGroup ? String(qrGroup).trim() : (botConfig.monitor_group_chat_id || null),
+    note: qrGroup ? 'QR akan dikirim ke qr_monitor_group_chat_id' : 'QR akan dikirim ke grup dept / tenant default (fallback)',
+  });
+});
+
 // Trigger daily briefing manually (admin testing)
 app.post('/api/settings/daily-briefing/test', auth, async (req, res) => {
   const tid = writeTenantId(req);
