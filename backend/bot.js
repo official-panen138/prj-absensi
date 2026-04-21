@@ -555,7 +555,7 @@ export async function notifyApproved(tenantId, telegramId, name) {
 export async function pushClockQRToMonitor(tenantId, qrSession, staff) {
   const entry = runningBots.get(tenantId);
   if (!entry) return;
-  const chatId = resolveTargetChatId(tenantId, staff.department_id);
+  const chatId = resolveQrChatId(tenantId, staff.department_id);
   if (!chatId) return;
   const qrText = `WMS-${qrSession.qr_token}`;
   const png = await QRCode.toBuffer(qrText, { width: 320, margin: 2 });
@@ -571,7 +571,7 @@ export async function pushClockQRToMonitor(tenantId, qrSession, staff) {
 export async function pushBreakQRToMonitor(tenantId, breakLog, staff) {
   const entry = runningBots.get(tenantId);
   if (!entry) return;
-  const chatId = resolveTargetChatId(tenantId, staff.department_id);
+  const chatId = resolveQrChatId(tenantId, staff.department_id);
   if (!chatId) return;
   const me = entry.info || (await entry.bot.api.getMe());
   const deepLink = `https://t.me/${me.username}?start=qr_${breakLog.id}_${breakLog.qr_token}`;
@@ -593,6 +593,14 @@ function resolveTargetChatId(tenantId, deptId) {
   const dept = getDeptInfo(deptId);
   if (dept?.monitor_group_chat_id) return dept.monitor_group_chat_id;
   return readTenantConfig(tenantId).monitorGroupId;
+}
+
+// Resolve chat khusus untuk QR absensi (dipisah dari grup pelanggaran).
+// Priority: tenant-setting qr_monitor_group_chat_id → dept group → tenant default
+function resolveQrChatId(tenantId, deptId) {
+  const qrGroup = getTenantSetting(tenantId, 'qr_monitor_group_chat_id', null);
+  if (qrGroup) return String(qrGroup);
+  return resolveTargetChatId(tenantId, deptId);
 }
 
 // Build mention prefix tag head + asisten dept (deep link mention selalu nge-ping walau user belum kasih username)

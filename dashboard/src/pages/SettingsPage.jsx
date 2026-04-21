@@ -42,6 +42,7 @@ export default function SettingsPage({ token, user }) {
   const [pinForm, setPinForm] = useState('');
   const [showPin, setShowPin] = useState(false);
   const [botForm, setBotForm] = useState({ bot_token: '', monitor_group_chat_id: '', miniapp_url: '' });
+  const [qrGroup, setQrGroup] = useState('');
   const [motivForm, setMotivForm] = useState({ start: '', end: '' });
   const [swapModes, setSwapModes] = useState({ sick: true, move_off: true, trade: true });
   const [leaveCfg, setLeaveCfg] = useState({ enabled: true, days_per_period: 12, period_months: 6 });
@@ -114,6 +115,8 @@ export default function SettingsPage({ token, user }) {
         setBotForm({ bot_token: '', monitor_group_chat_id: bc.monitor_group_chat_id || '', miniapp_url: bc.miniapp_url || '' });
         setBotTokenMasked(bc.bot_token_masked || '');
       }
+      const qg = s.qr_monitor_group_chat_id?.value;
+      if (qg !== undefined) setQrGroup(qg ? String(qg) : '');
       const mq = s.motivation_quotes?.value;
       if (mq) {
         setMotivForm({
@@ -234,6 +237,30 @@ export default function SettingsPage({ token, user }) {
 
         <div className="text-[11px] text-gray-500 mt-1 font-mono">
           Mini App URL auto: <span className="text-gray-400">{window.location.origin}/miniapp</span>
+        </div>
+      </Card>
+
+      {/* QR Group (dipisah dari grup pelanggaran) */}
+      <Card className="p-5 mb-4">
+        <SectionHeader title="📱 QR Absensi Group" actions={isAdmin && (
+          <Btn size="sm" onClick={() => save('qr_group', '/settings/qr-group', { chat_id: qrGroup })} disabled={saving.qr_group}>
+            {saving.qr_group ? <Spinner /> : '💾 Save QR Group'}
+          </Btn>
+        )} />
+        <div className="text-xs text-gray-500 mb-3.5">
+          Grup khusus untuk QR Clock-in/out & Break. Terpisah dari grup pelanggaran (telat, IP violation, dll).
+          Kosongkan untuk pakai routing default (grup dept atau tenant default).
+        </div>
+        <div className="max-w-[400px]">
+          <FormRow label="QR GROUP CHAT ID" note="contoh: -5278656941">
+            <input
+              className={`${inputCls} font-mono`}
+              value={qrGroup}
+              disabled={!isAdmin}
+              onChange={(e) => setQrGroup(e.target.value)}
+              placeholder="-1001234567890"
+            />
+          </FormRow>
         </div>
       </Card>
 

@@ -1012,6 +1012,7 @@ const KV_ROUTES = {
     start: Array.isArray(body.start) ? body.start.map((s) => String(s).trim()).filter(Boolean) : [],
     end: Array.isArray(body.end) ? body.end.map((s) => String(s).trim()).filter(Boolean) : [],
   }],
+  '/api/settings/qr-group': (body) => ['qr_monitor_group_chat_id', String(body.chat_id || '').trim() || null],
   '/api/settings/daily-briefing': (body) => ['daily_briefing', {
     enabled: body.enabled !== false,
     hour: Number.isInteger(+body.hour) && +body.hour >= 0 && +body.hour <= 23 ? +body.hour : 6,
