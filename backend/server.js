@@ -1028,6 +1028,7 @@ const KV_ROUTES = {
     end: Array.isArray(body.end) ? body.end.map((s) => String(s).trim()).filter(Boolean) : [],
   }],
   '/api/settings/qr-group': (body) => ['qr_monitor_group_chat_id', String(body.chat_id || '').trim() || null],
+  '/api/settings/clock-in-window': (body) => ['clock_in_open_offset_minutes', Number.isFinite(+body.offset_minutes) && +body.offset_minutes >= 0 ? +body.offset_minutes : 60],
   '/api/settings/daily-briefing': (body) => ['daily_briefing', {
     enabled: body.enabled !== false,
     hour: Number.isInteger(+body.hour) && +body.hour >= 0 && +body.hour <= 23 ? +body.hour : 6,
@@ -1126,6 +1127,32 @@ function getEffectiveShiftTime(tenantId, departmentId, name) {
   return db.prepare('SELECT start_time, end_time FROM shifts WHERE tenant_id = ? AND name = ?').get(tenantId, name) || {};
 }
 
+function previousDate(dateStr) {
+  return new Date(new Date(dateStr + 'T00:00:00Z').getTime() - 86400000).toISOString().slice(0, 10);
+}
+
+// Hitung kapan tombol Start aktif: shift_start - offset_minutes (dalam WIB hari ini).
+// Return Date object (UTC), atau null kalau shift_time tidak ditemukan.
+function computeClockInOpenTime(tenantId, departmentId, shiftName, dateStr, offsetMin) {
+  const sh = getEffectiveShiftTime(tenantId, departmentId, shiftName);
+  if (!sh.start_time) return null;
+  const [hh, mm] = String(sh.start_time).split(':').map(Number);
+  // Build date in WIB timezone (UTC+7) and convert to UTC ms
+  const wibMidnightUtcMs = new Date(dateStr + 'T00:00:00Z').getTime() - 7 * 3600000;
+  const shiftStartUtcMs = wibMidnightUtcMs + (hh * 60 + mm) * 60000;
+  return new Date(shiftStartUtcMs - (offsetMin || 0) * 60000);
+}
+
+// Cari attendance row terbuka (clock_out IS NULL) untuk staff —
+// cek hari ini, kalau tidak ada cek kemarin (untuk shift yang menyeberang midnight).
+function findOpenAttendance(staffId, today) {
+  let row = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ? AND clock_out IS NULL').get(staffId, today);
+  if (row) return row;
+  const yesterday = previousDate(today);
+  row = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ? AND clock_out IS NULL').get(staffId, yesterday);
+  return row || null;
+}
+
 // ============ TELEGRAM MINI APP ============
 function normalizeIp(ip) {
   return String(ip || '').replace(/^::ffff:/, '').trim();
@@ -1220,6 +1247,17 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
   const leaveCfg = getLeaveConfig(req.staff.tenant_id);
   const leaveQuota = getLeaveQuota(req.staff.tenant_id, req.staff.id, leaveCfg);
 
+  // Clock-in window info untuk Mini App
+  const offsetMin = +(getTenantSetting(req.staff.tenant_id, 'clock_in_open_offset_minutes', 60));
+  const openAt = computeClockInOpenTime(req.staff.tenant_id, req.staff.department_id, todayShift, today, offsetMin);
+  const yesterdayOpen = db.prepare('SELECT shift FROM attendance WHERE staff_id = ? AND date = ? AND clock_out IS NULL').get(req.staff.id, previousDate(today));
+  const clockInWindow = {
+    opens_at: openAt ? openAt.toISOString() : null,
+    is_open_now: openAt ? Date.now() >= openAt.getTime() : true,
+    offset_minutes: offsetMin,
+    yesterday_open_shift: yesterdayOpen?.shift || null,
+  };
+
   res.json({
     success: true,
     staff: {
@@ -1236,6 +1274,7 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
     client_ip: clientIp,
     motivation_quotes: motivationQuotes,
     swap_modes_enabled: swapModes,
+    clock_in_window: clockInWindow,
     leave_quota: leaveQuota,
   });
 });
@@ -1408,9 +1447,22 @@ app.post('/api/bot/clock-in-request-qr', tgAuth, async (req, res) => {
   const today = todayPP();
   const existing = db.prepare('SELECT id FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
   if (existing) return fail(res, 400, 'Sudah clock-in hari ini.');
+  // Cek shift kemarin yang belum di-clock-out (mis. night shift cross midnight)
+  const yesterdayOpen = db.prepare('SELECT shift FROM attendance WHERE staff_id = ? AND date = ? AND clock_out IS NULL').get(req.staff.id, previousDate(today));
+  if (yesterdayOpen) {
+    return fail(res, 400, `Shift ${yesterdayOpen.shift} kemarin belum di-clock-out. Pulang Kerja dulu.`);
+  }
   const sched = db.prepare('SELECT status FROM schedule_daily WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
   if (sched && ['off', 'sick', 'leave'].includes(sched.status)) {
     return fail(res, 400, `Jadwal hari ini: ${sched.status.toUpperCase()}. Tidak bisa clock-in.`);
+  }
+  // Validasi unlock window: tidak bisa start sebelum (shift_start - offset)
+  const offsetMin = +(getTenantSetting(req.staff.tenant_id, 'clock_in_open_offset_minutes', 60));
+  const todayShift = sched?.shift || req.staff.current_shift;
+  const openAt = computeClockInOpenTime(req.staff.tenant_id, req.staff.department_id, todayShift, today, offsetMin);
+  if (openAt && Date.now() < openAt.getTime()) {
+    const wibOpen = new Date(openAt.getTime() + 7 * 3600000).toISOString().slice(11, 16);
+    return fail(res, 400, `Tombol Mulai akan aktif jam ${wibOpen} WIB (shift ${todayShift}).`);
   }
   const session = await createClockQrSession(req.staff.tenant_id, req.staff, 'clock_in');
   pushClockQRToMonitor(req.staff.tenant_id, { ...session, action: 'clock_in' }, req.staff).catch((e) => console.warn('[bot] push QR failed:', e.message));
@@ -1424,9 +1476,8 @@ app.post('/api/bot/clock-out-request-qr', tgAuth, async (req, res) => {
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor untuk Pulang Kerja.`);
   }
   const today = todayPP();
-  const att = db.prepare('SELECT clock_out FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
-  if (!att) return fail(res, 400, 'Belum clock-in hari ini.');
-  if (att.clock_out) return fail(res, 400, 'Sudah clock-out.');
+  const att = findOpenAttendance(req.staff.id, today);
+  if (!att) return fail(res, 400, 'Tidak ada shift terbuka untuk di-clock-out.');
   const session = await createClockQrSession(req.staff.tenant_id, req.staff, 'clock_out');
   pushClockQRToMonitor(req.staff.tenant_id, { ...session, action: 'clock_out' }, req.staff).catch((e) => console.warn('[bot] push QR failed:', e.message));
   ok(res, session);
@@ -1501,9 +1552,8 @@ function clockOutImpl(req, res) {
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Clock-Out.`);
   }
   const today = todayPP();
-  const att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
-  if (!att) return fail(res, 400, 'Belum clock-in.');
-  if (att.clock_out) return fail(res, 400, 'Sudah clock-out.');
+  const att = findOpenAttendance(req.staff.id, today);
+  if (!att) return fail(res, 400, 'Tidak ada shift terbuka untuk di-clock-out.');
   const now = new Date();
   const totalMin = Math.round((now - new Date(att.clock_in)) / 60000);
   const breakMin = att.total_break_minutes || 0;

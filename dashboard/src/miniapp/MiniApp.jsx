@@ -292,11 +292,37 @@ export default function MiniApp() {
         </div>
       )}
 
-      {notStarted && (
-        <Btn onClick={scanAndClockIn} disabled={me?.ip_allowed === false}>
-          📷 Scan QR — START (Clock In){me?.ip_allowed === false ? ' · Butuh IP Kantor' : ''}
-        </Btn>
-      )}
+      {notStarted && (() => {
+        const cw = me?.clock_in_window;
+        const yesterdayOpen = cw?.yesterday_open_shift;
+        if (yesterdayOpen) {
+          return (
+            <div style={{padding:'14px',background:'rgba(245,158,11,0.15)',border:'1px solid rgba(245,158,11,0.4)',borderRadius:12,fontSize:13,marginBottom:14,lineHeight:1.5}}>
+              <div style={{fontWeight:700,color:'#fbbf24',marginBottom:4}}>⏳ Shift {yesterdayOpen} kemarin belum di-clock-out</div>
+              <div style={{fontSize:12,color:'#fcd34d'}}>Pulang Kerja dulu sebelum mulai shift baru.</div>
+            </div>
+          );
+        }
+        const notOpenYet = cw && cw.is_open_now === false && cw.opens_at;
+        if (notOpenYet) {
+          const opensWib = new Date(new Date(cw.opens_at).getTime() + 7 * 3600000).toISOString().slice(11, 16);
+          const msUntil = new Date(cw.opens_at).getTime() - now;
+          const minsUntil = Math.max(0, Math.ceil(msUntil / 60000));
+          const h = Math.floor(minsUntil / 60), m = minsUntil % 60;
+          const eta = h > 0 ? `${h}j ${m}m` : `${m}m`;
+          return (
+            <div style={{padding:'14px',background:'rgba(99,102,241,0.15)',border:'1px solid rgba(99,102,241,0.4)',borderRadius:12,fontSize:13,marginBottom:14,lineHeight:1.5,textAlign:'center'}}>
+              <div style={{fontWeight:700,color:'#a5b4fc',marginBottom:4}}>🕐 Tombol Mulai akan aktif jam {opensWib} WIB</div>
+              <div style={{fontSize:12,color:'#c7d2fe'}}>Shift {me?.staff?.today_shift} · sisa {eta}</div>
+            </div>
+          );
+        }
+        return (
+          <Btn onClick={scanAndClockIn} disabled={me?.ip_allowed === false}>
+            📷 Scan QR — START (Clock In){me?.ip_allowed === false ? ' · Butuh IP Kantor' : ''}
+          </Btn>
+        );
+      })()}
 
       {isWorking && (() => {
         const q = me?.break_quotas || {};

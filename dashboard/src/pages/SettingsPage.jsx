@@ -43,6 +43,7 @@ export default function SettingsPage({ token, user }) {
   const [showPin, setShowPin] = useState(false);
   const [botForm, setBotForm] = useState({ bot_token: '', monitor_group_chat_id: '', miniapp_url: '' });
   const [qrGroup, setQrGroup] = useState('');
+  const [clockInOffset, setClockInOffset] = useState(60);
   const [motivForm, setMotivForm] = useState({ start: '', end: '' });
   const [swapModes, setSwapModes] = useState({ sick: true, move_off: true, trade: true });
   const [leaveCfg, setLeaveCfg] = useState({ enabled: true, days_per_period: 12, period_months: 6 });
@@ -117,6 +118,8 @@ export default function SettingsPage({ token, user }) {
       }
       const qg = s.qr_monitor_group_chat_id?.value;
       if (qg !== undefined) setQrGroup(qg ? String(qg) : '');
+      const cio = s.clock_in_open_offset_minutes?.value;
+      if (cio !== undefined) setClockInOffset(Number.isFinite(+cio) ? +cio : 60);
       const mq = s.motivation_quotes?.value;
       if (mq) {
         setMotivForm({
@@ -278,6 +281,26 @@ export default function SettingsPage({ token, user }) {
           <FormRow label="MINUTES">
             <input type="number" className={inputCls} min="0" max="30" value={graceForm}
               disabled={!isAdmin} onChange={(e) => setGraceForm(Math.max(0, Math.min(30, parseInt(e.target.value) || 0)))} />
+          </FormRow>
+        </div>
+      </Card>
+
+      {/* Clock-In Window */}
+      <Card className="p-5 mb-4">
+        <SectionHeader title="🕐 Clock-In Window" actions={isAdmin && (
+          <Btn size="sm" onClick={() => save('clock_in_window', '/settings/clock-in-window', { offset_minutes: clockInOffset })} disabled={saving.clock_in_window}>
+            {saving.clock_in_window ? <Spinner /> : '💾 Save'}
+          </Btn>
+        )} />
+        <div className="text-xs text-gray-500 mb-3.5">
+          Berapa menit sebelum jadwal shift staff bisa mulai klik tombol <strong>Mulai Kerja</strong>.
+          Contoh: shift Morning 10:00, offset 60 menit → tombol aktif jam 09:00.
+          Shift malam yang menyeberang midnight juga tetap bisa Pulang Kerja keesokan paginya.
+        </div>
+        <div className="max-w-[260px]">
+          <FormRow label="OFFSET (menit sebelum shift)" note="0 = persis jam shift">
+            <input type="number" className={inputCls} min="0" max="240" value={clockInOffset}
+              disabled={!isAdmin} onChange={(e) => setClockInOffset(Math.max(0, Math.min(240, parseInt(e.target.value) || 0)))} />
           </FormRow>
         </div>
       </Card>
