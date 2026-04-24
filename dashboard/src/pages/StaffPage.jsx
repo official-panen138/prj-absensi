@@ -156,7 +156,22 @@ export default function StaffPage({ token }) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4">
           <FormRow label="NAME"><input className={inputCls} value={form.name || ''} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} /></FormRow>
           <FormRow label="CATEGORY"><select className={inputCls} value={form.category || 'indonesian'} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}><option value="indonesian">Indonesian</option><option value="local">Cambodian</option></select></FormRow>
-          <FormRow label="DEFAULT SHIFT" note="hanya dipakai kalau tidak ada jadwal untuk hari itu — jadwal di Schedule Calendar selalu prioritas"><select className={inputCls} value={form.current_shift || 'morning'} onChange={(e) => setForm((f) => ({ ...f, current_shift: e.target.value }))}><option value="morning">Morning</option><option value="middle">Middle</option><option value="night">Night</option></select></FormRow>
+          <FormRow label="SHIFT" note={modal === 'add' ? 'shift awal sebelum jadwal di-generate' : '🔒 auto-sync dari Schedule Calendar — tidak bisa diubah manual'}>
+            {modal === 'add' ? (
+              <select className={inputCls} value={form.current_shift || 'morning'} onChange={(e) => setForm((f) => ({ ...f, current_shift: e.target.value }))}>
+                <option value="morning">Morning</option>
+                <option value="middle">Middle</option>
+                <option value="night">Night</option>
+              </select>
+            ) : (
+              <div className={`${inputCls} cursor-not-allowed select-none flex items-center gap-2 ${
+                form.current_shift === 'morning' ? 'text-emerald-400' :
+                form.current_shift === 'middle' ? 'text-yellow-400' : 'text-purple-400'
+              }`}>
+                🔒 {form.current_shift === 'morning' ? 'Morning' : form.current_shift === 'middle' ? 'Middle' : 'Night'}
+              </div>
+            )}
+          </FormRow>
           <FormRow label="DEPARTMENT" note={departments.length ? `${departments.length} department di tenant ini` : 'Tambah di menu Departments'}>
             <select className={inputCls} value={form.department_id || ''} onChange={(e) => {
               const id = e.target.value ? +e.target.value : null;
