@@ -45,15 +45,6 @@ export default function StaffPage({ token }) {
     } catch (e) { setToast({ type: 'error', text: e.message }); } finally { setSaving(false); }
   };
 
-  // STEP 2: Quick shift change
-  const quickShiftChange = async (staffId, newShift) => {
-    try {
-      await apiFetch(token, `/staff/${staffId}`, { method: 'PUT', body: { current_shift: newShift } });
-      setToast({ type: 'ok', text: 'Shift updated!' });
-      setStaff(prev => prev.map(s => s.id === staffId ? { ...s, current_shift: newShift } : s));
-    } catch (e) { setToast({ type: 'error', text: e.message }); }
-  };
-
   const approveStaff = async (id) => { try { await apiFetch(token, `/staff/${id}/approve`, { method: 'PUT' }); setToast({ type: 'ok', text: 'Staff approved!' }); fetchStaff(); } catch (e) { setToast({ type: 'error', text: e.message }); } };
   const deactivate = async (id, name, isActive) => { const action = isActive ? 'Deactivate' : 'Reactivate'; if (!window.confirm(action + ' ' + name + '?')) return; try { const res = await apiFetch(token, `/staff/${id}`, { method: 'DELETE' }); setToast({ type: 'ok', text: res.message || `${name} updated.` }); fetchStaff(); } catch (e) { setToast({ type: 'error', text: e.message }); } };
   const deleteStaff = async (id, name) => { if (!window.confirm('Permanently delete ' + name + '? This cannot be undone.')) return; if (!window.confirm('FINAL WARNING: All records for ' + name + ' will be deleted. Continue?')) return; try { await apiFetch(token, `/staff/${id}/permanent`, { method: 'DELETE' }); setToast({ type: 'ok', text: `${name} permanently deleted.` }); fetchStaff(); } catch (e) { setToast({ type: 'error', text: e.message }); } };
@@ -61,12 +52,14 @@ export default function StaffPage({ token }) {
   const inputCls = 'w-full bg-gray-800 border border-gray-700 rounded-md px-3 py-2 text-sm text-gray-100 outline-none focus:border-emerald-500 transition-colors';
   const thCls = 'px-3 py-2.5 text-left font-bold text-[11px] text-gray-500 whitespace-nowrap tracking-wide border-b border-gray-700';
   const tdCls = 'px-3 py-2.5 text-gray-100';
-  const shiftSelectCls = 'text-[11px] px-1.5 py-1 bg-gray-800 border border-gray-700 rounded outline-none focus:border-emerald-500 cursor-pointer';
 
   return (
     <div className="p-4 lg:p-6 overflow-y-auto h-full animate-fade-in">
       <Toast msg={toast} onClose={() => setToast(null)} />
       <SectionHeader title="Staff Management" actions={<Btn size="sm" onClick={openAdd}>+ Add Staff</Btn>} />
+      <div className="mt-2 mb-3 px-3 py-2 bg-blue-500/10 border border-blue-500/30 rounded-md text-[11px] text-blue-300">
+        🔒 <strong>Shift</strong> auto-sync dari jadwal harian (Schedule Calendar). Untuk ubah shift, edit jadwal di menu Schedule — perubahan akan ter-sync setiap pagi.
+      </div>
 
       {/* Filters */}
       <Card className="px-4 py-3 mb-4 flex flex-wrap gap-3 items-center">
@@ -91,15 +84,16 @@ export default function StaffPage({ token }) {
                   <td className={`${tdCls} font-semibold`}>{s.name}{s.telegram_username && <div className="text-[10px] text-gray-500">@{s.telegram_username}</div>}</td>
                   <td className={tdCls}><Badge color={s.category === 'indonesian' ? 'emerald' : 'purple'}>{s.category === 'indonesian' ? 'Indonesian' : 'Cambodian'}</Badge></td>
                   <td className={tdCls}>
-                    <select
-                      value={s.current_shift}
-                      onChange={(e) => quickShiftChange(s.id, e.target.value)}
-                      className={`${shiftSelectCls} ${s.current_shift === 'morning' ? 'text-emerald-400' : s.current_shift === 'middle' ? 'text-yellow-400' : 'text-purple-400'}`}
+                    <span
+                      title="Shift mengikuti jadwal harian — atur via Schedule, bukan di sini"
+                      className={`inline-block px-2 py-1 rounded-md text-[11px] font-bold cursor-not-allowed select-none border ${
+                        s.current_shift === 'morning' ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' :
+                        s.current_shift === 'middle' ? 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10' :
+                        'text-purple-400 border-purple-500/30 bg-purple-500/10'
+                      }`}
                     >
-                      <option value="morning">Morning</option>
-                      <option value="middle">Middle</option>
-                      <option value="night">Night</option>
-                    </select>
+                      🔒 {s.current_shift === 'morning' ? 'Morning' : s.current_shift === 'middle' ? 'Middle' : 'Night'}
+                    </span>
                   </td>
                   <td className={`${tdCls} text-gray-400`}>{s.department || '—'}</td>
                   <td className={`${tdCls} font-mono text-[11px] text-gray-400`}>{s.phone || '—'}</td>
@@ -134,15 +128,16 @@ export default function StaffPage({ token }) {
                 </div>
                 <div className="flex flex-wrap gap-1.5 mb-2">
                   <Badge color={s.category === 'indonesian' ? 'emerald' : 'purple'}>{s.category === 'indonesian' ? 'Indo' : 'Khmer'}</Badge>
-                  <select
-                    value={s.current_shift}
-                    onChange={(e) => quickShiftChange(s.id, e.target.value)}
-                    className={`${shiftSelectCls} ${s.current_shift === 'morning' ? 'text-emerald-400' : s.current_shift === 'middle' ? 'text-yellow-400' : 'text-purple-400'}`}
+                  <span
+                    title="Shift mengikuti jadwal harian"
+                    className={`inline-block px-2 py-1 rounded-md text-[11px] font-bold cursor-not-allowed border ${
+                      s.current_shift === 'morning' ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' :
+                      s.current_shift === 'middle' ? 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10' :
+                      'text-purple-400 border-purple-500/30 bg-purple-500/10'
+                    }`}
                   >
-                    <option value="morning">Morning</option>
-                    <option value="middle">Middle</option>
-                    <option value="night">Night</option>
-                  </select>
+                    🔒 {s.current_shift === 'morning' ? 'Morning' : s.current_shift === 'middle' ? 'Middle' : 'Night'}
+                  </span>
                   {!s.is_approved && <Btn size="sm" variant="warning" onClick={() => approveStaff(s.id)}>Approve</Btn>}
                 </div>
                 <div className="flex gap-1.5">
