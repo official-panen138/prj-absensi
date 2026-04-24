@@ -1678,8 +1678,46 @@ app.listen(PORT, () => {
   startDailyBriefingScheduler();
 });
 
-// Daily briefing scheduler — fires at HH:00 PP per tenant once per date
+// Sync staff.current_shift dari schedule_daily hari ini.
+// Hanya update untuk staff yang punya schedule status='work' dengan shift berbeda.
+// OFF/SICK/LEAVE tidak menyentuh current_shift (preserve last work shift).
+function syncStaffShiftsFromDaily(tenantId, dateStr) {
+  const rows = db.prepare(`
+    SELECT s.id AS staff_id, s.current_shift AS old_shift, sd.shift AS new_shift, s.name
+    FROM staff s
+    JOIN schedule_daily sd ON sd.staff_id = s.id AND sd.date = ?
+    WHERE s.tenant_id = ? AND s.is_active = 1
+      AND sd.status = 'work' AND sd.shift IS NOT NULL AND sd.shift != s.current_shift
+  `).all(dateStr, tenantId);
+  if (!rows.length) return { updated: 0, changes: [] };
+  const upd = db.prepare('UPDATE staff SET current_shift = ? WHERE id = ?');
+  db.transaction(() => {
+    for (const r of rows) upd.run(r.new_shift, r.staff_id);
+  })();
+  return { updated: rows.length, changes: rows.map((r) => ({ staff_id: r.staff_id, name: r.name, from: r.old_shift, to: r.new_shift })) };
+}
+
+// Manual trigger sync (admin testing)
+app.post('/api/settings/sync-shifts', auth, (req, res) => {
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
+  const result = syncStaffShiftsFromDaily(tid, todayPP());
+  ok(res, result);
+});
+
+// Daily briefing scheduler — fires at HH:00 PP per tenant once per date.
+// Juga sync staff.current_shift dari jadwal hari ini sebelum kirim briefing.
 function startDailyBriefingScheduler() {
+  // Jalankan sync sekali saat startup (catch-up kalau server restart mid-day)
+  try {
+    const today = todayPP();
+    const tenants = db.prepare('SELECT id FROM tenants').all();
+    for (const t of tenants) {
+      const r = syncStaffShiftsFromDaily(t.id, today);
+      if (r.updated > 0) console.log(`[startup] synced ${r.updated} staff shifts for tenant=${t.id}`);
+    }
+  } catch (e) { console.warn('[startup] shift sync failed:', e.message); }
+
   setInterval(async () => {
     try {
       const ppNow = new Date(Date.now() + 7 * 3600000);
@@ -1692,11 +1730,14 @@ function startDailyBriefingScheduler() {
         if (ppNow.getUTCHours() !== hour) continue;
         const lastSent = getTenantSetting(t.id, 'daily_briefing_last_sent', null);
         if (lastSent === today) continue;
+        // Sync shift dulu, baru kirim briefing
+        const sync = syncStaffShiftsFromDaily(t.id, today);
+        if (sync.updated > 0) console.log(`[scheduler] synced ${sync.updated} staff shifts for tenant=${t.id}`);
         await notifyDailyOffSummary(t.id, today);
         setTenantSetting(t.id, 'daily_briefing_last_sent', today);
         console.log(`[scheduler] daily briefing sent tenant=${t.id} date=${today}`);
       }
     } catch (e) { console.warn('[scheduler] daily briefing tick:', e.message); }
   }, 60_000);
-  console.log('[scheduler] daily briefing started (checks every 60s)');
+  console.log('[scheduler] daily briefing + shift sync started (checks every 60s)');
 }
