@@ -1932,21 +1932,48 @@ function syncStaffShiftsFromDaily(tenantId, dateStr) {
   `).all(dateStr, tenantId);
 
   const upd = db.prepare('UPDATE staff SET current_shift = ? WHERE id = ?');
+  const findLastWork = db.prepare(`
+    SELECT shift FROM schedule_daily
+    WHERE staff_id = ? AND date <= ? AND status = 'work' AND shift IS NOT NULL
+    ORDER BY date DESC LIMIT 1
+  `);
+  // Fallback: cari shift dari hari KERJA TERDEKAT (forward) — untuk staff yang belum
+  // punya hari kerja sama sekali sebelum tanggal ini
+  const findNextWork = db.prepare(`
+    SELECT shift FROM schedule_daily
+    WHERE staff_id = ? AND date > ? AND status = 'work' AND shift IS NOT NULL
+    ORDER BY date ASC LIMIT 1
+  `);
   const changes = [];
   const skipped = [];
   db.transaction(() => {
     for (const r of all) {
-      if (!r.sched_status) {
-        skipped.push({ name: r.name, reason: 'no_schedule_today', current: r.current_shift });
-      } else if (r.sched_status !== 'work') {
-        skipped.push({ name: r.name, reason: r.sched_status, current: r.current_shift });
-      } else if (!r.sched_shift) {
-        skipped.push({ name: r.name, reason: 'work_no_shift', current: r.current_shift });
-      } else if (r.sched_shift === r.current_shift) {
-        // already in sync
+      let target = null;
+      let reason = null;
+
+      if (r.sched_status === 'work' && r.sched_shift) {
+        target = r.sched_shift;
       } else {
-        upd.run(r.sched_shift, r.staff_id);
-        changes.push({ staff_id: r.staff_id, name: r.name, from: r.current_shift, to: r.sched_shift });
+        // Hari ini OFF/SICK/LEAVE atau belum ada jadwal → cari hari kerja terdekat
+        const past = findLastWork.get(r.staff_id, dateStr);
+        if (past?.shift) {
+          target = past.shift;
+        } else {
+          const future = findNextWork.get(r.staff_id, dateStr);
+          if (future?.shift) target = future.shift;
+        }
+        if (!r.sched_status) reason = 'no_schedule_today';
+        else if (r.sched_status !== 'work') reason = r.sched_status;
+        else reason = 'work_no_shift';
+      }
+
+      if (!target) {
+        skipped.push({ name: r.name, reason: reason || 'no_work_shift_anywhere', current: r.current_shift });
+      } else if (target === r.current_shift) {
+        // already synced (mungkin hari ini OFF tapi current_shift sudah cocok dgn last work)
+      } else {
+        upd.run(target, r.staff_id);
+        changes.push({ staff_id: r.staff_id, name: r.name, from: r.current_shift, to: target, source: reason ? `fallback_${reason}` : 'today_work' });
       }
     }
   })();
