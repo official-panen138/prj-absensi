@@ -1954,13 +1954,14 @@ function syncStaffShiftsFromDaily(tenantId, dateStr) {
       if (r.sched_status === 'work' && r.sched_shift) {
         target = r.sched_shift;
       } else {
-        // Hari ini OFF/SICK/LEAVE atau belum ada jadwal → cari hari kerja terdekat
-        const past = findLastWork.get(r.staff_id, dateStr);
-        if (past?.shift) {
-          target = past.shift;
+        // Hari ini OFF/SICK/LEAVE atau belum ada jadwal:
+        // Prefer NEXT upcoming work day (intent terbaru), fallback ke past
+        const future = findNextWork.get(r.staff_id, dateStr);
+        if (future?.shift) {
+          target = future.shift;
         } else {
-          const future = findNextWork.get(r.staff_id, dateStr);
-          if (future?.shift) target = future.shift;
+          const past = findLastWork.get(r.staff_id, dateStr);
+          if (past?.shift) target = past.shift;
         }
         if (!r.sched_status) reason = 'no_schedule_today';
         else if (r.sched_status !== 'work') reason = r.sched_status;
