@@ -324,7 +324,8 @@ app.get('/api/activity/live', auth, (req, res) => {
   const today = todayPP();
   const yesterday = previousDate(today);
   const sc = scopeTenant(req, 's.tenant_id');
-  // Subquery pilih attendance terbaik: prefer hari ini, fallback shift kemarin yg masih open
+  // Match attendance: hari ini → fallback shift kemarin yg masih open (Night cross-midnight).
+  // UNIQUE(staff_id,date) memastikan satu row per join.
   const staff = db.prepare(`
     SELECT s.id, s.tenant_id, s.name, s.department, s.category, s.current_shift,
            a.date AS att_date, a.shift AS att_shift, a.clock_in, a.clock_out, a.late_minutes, a.current_status,
@@ -332,12 +333,13 @@ app.get('/api/activity/live', auth, (req, res) => {
            sd.status AS schedule_status,
            sd.shift AS scheduled_shift
     FROM staff s
-    LEFT JOIN attendance a ON a.id = (
-      SELECT a2.id FROM attendance a2
-      WHERE a2.staff_id = s.id
-        AND (a2.date = ? OR (a2.date = ? AND a2.clock_out IS NULL))
-      ORDER BY (a2.date = ?) DESC, a2.date DESC
-      LIMIT 1
+    LEFT JOIN attendance a ON a.staff_id = s.id AND (
+      a.date = ?
+      OR (
+        a.date = ?
+        AND a.clock_out IS NULL
+        AND NOT EXISTS (SELECT 1 FROM attendance ax WHERE ax.staff_id = s.id AND ax.date = ?)
+      )
     )
     LEFT JOIN schedule_daily sd ON sd.staff_id = s.id AND sd.date = ?
     WHERE s.is_active = 1${sc.clause}
