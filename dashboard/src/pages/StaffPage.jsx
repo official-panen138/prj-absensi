@@ -8,7 +8,7 @@ export default function StaffPage({ token }) {
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [filters, setFilters] = useState({ shift: '', category: '', department: '' });
-  const [deptInput, setDeptInput] = useState('');
+  const [nameSearch, setNameSearch] = useState('');
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
@@ -31,7 +31,11 @@ export default function StaffPage({ token }) {
   }, [token, filters]);
 
   useEffect(() => { fetchStaff(); }, [fetchStaff]);
-  useEffect(() => { const t = setTimeout(() => setFilters((f) => ({ ...f, department: deptInput })), 400); return () => clearTimeout(t); }, [deptInput]);
+
+  // Filter by nama (client-side, instant)
+  const visibleStaff = nameSearch.trim()
+    ? staff.filter((s) => s.name?.toLowerCase().includes(nameSearch.trim().toLowerCase()) || s.telegram_username?.toLowerCase().includes(nameSearch.trim().toLowerCase()))
+    : staff;
 
   const openAdd = () => { setForm({ name: '', category: 'indonesian', current_shift: 'morning', department: '', phone: '', telegram_id: '', telegram_username: '' }); setModal('add'); };
   const openEdit = (s) => { setForm({ ...s }); setModal(s); };
@@ -80,8 +84,12 @@ export default function StaffPage({ token }) {
         <select className={`${inputCls} w-[150px]`} value={filters.category} onChange={(e) => setFilters((f) => ({ ...f, category: e.target.value }))}>
           <option value="">All Categories</option><option value="indonesian">Indonesian</option><option value="local">Cambodian</option>
         </select>
-        <input className={`${inputCls} w-[160px]`} placeholder="Filter department..." value={deptInput} onChange={(e) => setDeptInput(e.target.value)} />
-        <span className="text-xs text-gray-500 ml-auto">{staff.length} staff</span>
+        <select className={`${inputCls} w-[200px]`} value={filters.department} onChange={(e) => setFilters((f) => ({ ...f, department: e.target.value }))}>
+          <option value="">All Departments</option>
+          {departments.map((d) => <option key={d.id} value={d.name}>🏢 {d.name}</option>)}
+        </select>
+        <input className={`${inputCls} flex-1 min-w-[180px]`} placeholder="🔍 Cari nama atau @username..." value={nameSearch} onChange={(e) => setNameSearch(e.target.value)} />
+        <span className="text-xs text-gray-500 whitespace-nowrap">{visibleStaff.length}{visibleStaff.length !== staff.length ? ` / ${staff.length}` : ''} staff</span>
       </Card>
 
       {/* Desktop Table */}
@@ -90,7 +98,7 @@ export default function StaffPage({ token }) {
           <table className="w-full border-collapse text-xs">
             <thead><tr className="bg-gray-800">{['Name', 'Kategori', 'Shift', 'Dept', 'Phone', 'Status', 'Approved', 'Aksi'].map((h) => <th key={h} className={thCls}>{h}</th>)}</tr></thead>
             <tbody>
-              {staff.map((s) => (
+              {visibleStaff.map((s) => (
                 <tr key={s.id} className="border-b border-gray-800 hover:bg-gray-800/50 transition-colors">
                   <td className={`${tdCls} font-semibold`}>{s.name}{s.telegram_username && <div className="text-[10px] text-gray-500">@{s.telegram_username}</div>}</td>
                   <td className={tdCls}><Badge color={s.category === 'indonesian' ? 'emerald' : 'purple'}>{s.category === 'indonesian' ? 'Indonesian' : 'Cambodian'}</Badge></td>
@@ -126,7 +134,7 @@ export default function StaffPage({ token }) {
       <div className="md:hidden">
         {loading ? <div className="flex justify-center p-10"><Spinner /></div> : (
           <div className="grid gap-2">
-            {staff.map((s) => (
+            {visibleStaff.map((s) => (
               <Card key={s.id} className="p-3">
                 <div className="flex justify-between items-start mb-2">
                   <div>
