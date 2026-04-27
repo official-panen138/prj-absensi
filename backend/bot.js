@@ -35,6 +35,15 @@ function findStaffByTelegramId(tenantId, tgId) {
   return db.prepare('SELECT * FROM staff WHERE tenant_id = ? AND telegram_id = ?').get(tenantId, String(tgId));
 }
 
+function findStaffByName(tenantId, name) {
+  return db.prepare('SELECT id, name, is_active, is_approved FROM staff WHERE tenant_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?))').get(tenantId, name);
+}
+
+function findStaffByTelegramUsername(tenantId, username) {
+  if (!username) return null;
+  return db.prepare('SELECT id, name FROM staff WHERE tenant_id = ? AND LOWER(telegram_username) = LOWER(?)').get(tenantId, String(username).replace(/^@/, ''));
+}
+
 function getAdminChatIds(tenantId) {
   // For default tenant, also check env
   if (tenantId === getDefaultTenantId() && process.env.TELEGRAM_ADMIN_CHAT_IDS) {
@@ -68,6 +77,9 @@ function attachHandlers(bot, tenantId) {
     if (payload && payload.startsWith('qr_')) return handleQrScan(ctx, tenantId, payload);
 
     const staff = findStaffByTelegramId(tenantId, ctx.from.id);
+    if (staff && !staff.is_active) {
+      return ctx.reply(`🚫 Halo ${staff.name}, akun Anda dinonaktifkan oleh admin. Hubungi admin kalau perlu reaktivasi — tidak bisa daftar ulang dengan akun Telegram yang sama.`);
+    }
     if (staff && staff.is_approved) {
       return ctx.reply(`Hi ${staff.name}! Tap below to open WMS.`, { reply_markup: openMiniAppKeyboard(tenantId) });
     }
@@ -192,8 +204,16 @@ function attachHandlers(bot, tenantId) {
     }
 
     const existing = findStaffByTelegramId(tenantId, ctx.from.id);
+    if (existing && !existing.is_active) {
+      // Block lanjut ngetik kalau akun dinonaktifkan
+      ctx.session = { step: null, form: {} };
+      return ctx.reply(`🚫 Akun Anda dinonaktifkan oleh admin. Tidak bisa daftar ulang. Hubungi admin.`);
+    }
     if (existing && existing.is_approved && !s.step) {
       return ctx.reply('Tap below to open WMS.', { reply_markup: openMiniAppKeyboard(tenantId) });
+    }
+    if (existing && !existing.is_approved && !s.step) {
+      return ctx.reply(`⏳ Akun Anda menunggu persetujuan admin. Mohon tunggu — tidak perlu daftar ulang.`);
     }
 
     if (s.step === 'pin') {
@@ -205,6 +225,10 @@ function attachHandlers(bot, tenantId) {
 
     if (s.step === 'name') {
       if (txt.length < 2) return ctx.reply('Nama terlalu pendek. Coba lagi.');
+      const dupName = findStaffByName(tenantId, txt);
+      if (dupName) {
+        return ctx.reply(`⚠ Nama *${txt}* sudah terdaftar di sistem (status: ${dupName.is_active ? (dupName.is_approved ? 'aktif' : 'menunggu approval') : 'dinonaktifkan'}). Pakai nama lengkap yang berbeda atau hubungi admin.`, { parse_mode: 'Markdown' });
+      }
       s.form.name = txt;
       s.step = 'category';
       const list = CATEGORIES.map((c, i) => `${i + 1} ${c.label}`).join('\n');
@@ -248,6 +272,25 @@ function attachHandlers(bot, tenantId) {
         return ctx.reply('❌ Registrasi dibatalkan. Ketik /start untuk mulai lagi.');
       }
       if (ans !== 'yes' && ans !== 'y') return ctx.reply('Ketik *YES* atau *NO*.', { parse_mode: 'Markdown' });
+
+      // Anti-duplikat — final guard sebelum INSERT
+      const dupTg = findStaffByTelegramId(tenantId, ctx.from.id);
+      if (dupTg) {
+        ctx.session = { step: null, form: {} };
+        return ctx.reply(`⚠ Akun Telegram Anda sudah terdaftar sebagai *${dupTg.name}* (status: ${dupTg.is_active ? (dupTg.is_approved ? 'aktif' : 'menunggu approval') : 'dinonaktifkan'}). Tidak bisa daftar 2x.`, { parse_mode: 'Markdown' });
+      }
+      const dupName = findStaffByName(tenantId, s.form.name);
+      if (dupName) {
+        ctx.session = { step: null, form: {} };
+        return ctx.reply(`⚠ Nama *${s.form.name}* sudah terdaftar oleh staff lain. Hubungi admin.`, { parse_mode: 'Markdown' });
+      }
+      if (ctx.from.username) {
+        const dupUser = findStaffByTelegramUsername(tenantId, ctx.from.username);
+        if (dupUser) {
+          ctx.session = { step: null, form: {} };
+          return ctx.reply(`⚠ Username Telegram @${ctx.from.username} sudah terdaftar sebagai *${dupUser.name}*. Hubungi admin.`, { parse_mode: 'Markdown' });
+        }
+      }
 
       const today = new Date().toISOString().slice(0, 10);
       // Resolve department_id (find or create)
