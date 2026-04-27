@@ -5,7 +5,10 @@ import { db, getTenantSetting, getDefaultTenantId } from './db.js';
 import { emitLiveUpdate } from './events.js';
 import { renderSickPair, renderMoveOffPair, renderTradePair, renderSnapshot, renderSnapshotMulti, renderLeavePair } from './scheduleSnapshot.js';
 
-const DEPARTMENTS = ['Customer Service', 'Finance', 'Captain', 'SEO Marketing', 'Social Media Marketing', 'CRM', 'Telemarketing'];
+// Departments di-fetch dynamic dari DB per tenant — tidak hardcode lagi.
+function getTenantDepartments(tenantId) {
+  return db.prepare('SELECT id, name FROM departments WHERE tenant_id = ? ORDER BY name').all(tenantId);
+}
 const CATEGORIES = [{ key: 'indonesian', label: 'Indonesian' }, { key: 'local', label: 'Cambodian' }];
 
 // Map tenant_id → { bot, info, token }
@@ -214,14 +217,23 @@ function attachHandlers(bot, tenantId) {
       s.form.category = CATEGORIES[idx].key;
       s.form.category_label = CATEGORIES[idx].label;
       s.step = 'department';
-      const list = DEPARTMENTS.map((d, i) => `${i + 1} ${d}`).join('\n');
+      const depts = getTenantDepartments(tenantId);
+      if (!depts.length) {
+        s.step = null; s.form = {};
+        return ctx.reply('⚠ Belum ada department di tenant ini. Hubungi admin untuk tambah department dulu.');
+      }
+      // Simpan opsi ke session supaya validasi pakai snapshot yang sama (race-safe)
+      s.form._dept_options = depts.map((d) => d.name);
+      const list = depts.map((d, i) => `${i + 1} ${d.name}`).join('\n');
       return ctx.reply(`🏢 *Pilih department:*\n${list}\n\nKetik nomornya:`, { parse_mode: 'Markdown' });
     }
 
     if (s.step === 'department') {
+      const opts = Array.isArray(s.form?._dept_options) ? s.form._dept_options : [];
       const idx = parseInt(txt) - 1;
-      if (isNaN(idx) || !DEPARTMENTS[idx]) return ctx.reply(`Pilihan tidak valid. Ketik 1-${DEPARTMENTS.length}.`);
-      s.form.department = DEPARTMENTS[idx];
+      if (isNaN(idx) || !opts[idx]) return ctx.reply(`Pilihan tidak valid. Ketik 1-${opts.length}.`);
+      s.form.department = opts[idx];
+      delete s.form._dept_options;
       s.step = 'confirm';
       return ctx.reply(
         `📋 *Confirm Registration:*\n\n👤 Name: ${s.form.name}\n🌏 Category: ${s.form.category_label}\n🏢 Department: ${s.form.department}\n\nType *YES* to confirm or *NO* to cancel.`,
