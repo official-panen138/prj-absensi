@@ -56,9 +56,16 @@ export default function StaffPage({ token }) {
   return (
     <div className="p-4 lg:p-6 overflow-y-auto h-full animate-fade-in">
       <Toast msg={toast} onClose={() => setToast(null)} />
-      <SectionHeader title="Staff Management" actions={<Btn size="sm" onClick={openAdd}>+ Add Staff</Btn>} />
+      <SectionHeader title="Staff Management" actions={<div className="flex gap-2"><Btn size="sm" variant="ghost" onClick={async () => {
+        try {
+          const r = await apiFetch(token, '/settings/sync-shifts', { method: 'POST', body: {} });
+          const upd = r.data?.updated || 0;
+          setToast({ type: 'ok', text: upd > 0 ? `✓ ${upd} staff shift di-sync dari jadwal hari ini` : 'Semua shift sudah sesuai jadwal — tidak ada perubahan' });
+          fetchStaff();
+        } catch (e) { setToast({ type: 'error', text: e.message }); }
+      }}>↻ Sync Shifts</Btn><Btn size="sm" onClick={openAdd}>+ Add Staff</Btn></div>} />
       <div className="mt-2 mb-3 px-3 py-2 bg-blue-500/10 border border-blue-500/30 rounded-md text-[11px] text-blue-300">
-        🔒 <strong>Shift</strong> auto-sync dari jadwal harian (Schedule Calendar). Untuk ubah shift, edit jadwal di menu Schedule — perubahan akan ter-sync setiap pagi.
+        🔒 <strong>Shift</strong> auto-sync dari jadwal harian (Schedule Calendar). Auto-sync: setiap edit jadwal hari ini + jam 06:00 WIB. Klik <strong>↻ Sync Shifts</strong> untuk trigger manual sekarang.
       </div>
 
       {/* Filters */}
