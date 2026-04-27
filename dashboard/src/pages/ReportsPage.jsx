@@ -105,14 +105,14 @@ export default function ReportsPage({ token, user }) {
 
   const openDetail = async (staffId, name) => {
     setDetailLoading(true);
-    setDetail({ staff: { name }, days: [], summary: {} });
+    setDetail({ staff: { name }, days: [], summary: {}, _loading: true });
     try {
       const { from, to } = computeRange();
       const res = await apiFetch(token, `/reports/productivity-detail/${staffId}/${month}?from=${from}&to=${to}`);
-      setDetail(res.data);
+      setDetail({ ...res.data, _loading: false });
     } catch (e) {
-      setToast({ type: 'error', text: e.message });
-      setDetail(null);
+      setDetail({ staff: { name }, days: [], summary: {}, _error: e.message });
+      setToast({ type: 'error', text: `Detail error: ${e.message}` });
     } finally {
       setDetailLoading(false);
     }
@@ -240,7 +240,16 @@ export default function ReportsPage({ token, user }) {
       </>}
 
       <Modal open={!!detail} onClose={() => setDetail(null)} title={detail?.staff?.name ? `📊 Detail Produktivitas — ${detail.staff.name}` : 'Detail'} width="max-w-5xl">
-        {detailLoading ? <div className="flex justify-center p-10"><Spinner /></div> : detail && (
+        {detailLoading ? <div className="flex justify-center p-10"><Spinner /></div> : detail?._error ? (
+          <div className="p-4 bg-red-500/15 border border-red-500/30 rounded-lg text-red-400 text-sm">
+            <div className="font-bold mb-1">⚠ Gagal memuat detail</div>
+            <div className="text-xs font-mono">{detail._error}</div>
+            <div className="text-[11px] text-gray-400 mt-2">
+              Kemungkinan: backend belum di-deploy versi terbaru (endpoint <code>/api/reports/productivity-detail</code> belum ada).
+              Cek Railway Deployments — pastikan commit terbaru sudah successful.
+            </div>
+          </div>
+        ) : detail && (
           <ProductivityDetail detail={detail} thCls={thCls} tdCls={tdCls} />
         )}
       </Modal>
