@@ -940,7 +940,7 @@ app.get('/api/reports/productivity-detail/:staffId/:ym', auth, (req, res) => {
   const staffId = +req.params.staffId;
   const { start, end } = dateRange(req.params.ym, req.query.from, req.query.to);
   const sc = scopeTenant(req, 's.tenant_id');
-  const staff = db.prepare('SELECT id, name, department, current_shift FROM staff WHERE id = ?' + sc.clause).get(staffId, ...sc.params);
+  const staff = db.prepare('SELECT s.id, s.name, s.department, s.current_shift FROM staff s WHERE s.id = ?' + sc.clause).get(staffId, ...sc.params);
   if (!staff) return fail(res, 404, 'Staff tidak ditemukan / bukan tenant Anda');
 
   // Ambil semua schedule + attendance dalam range, join per tanggal
