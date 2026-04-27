@@ -4,6 +4,7 @@ import QRCode from 'qrcode';
 import { db, getTenantSetting, getDefaultTenantId } from './db.js';
 import { emitLiveUpdate } from './events.js';
 import { renderSickPair, renderMoveOffPair, renderTradePair, renderSnapshot, renderSnapshotMulti, renderLeavePair } from './scheduleSnapshot.js';
+import { applySwapApproval, applyLeaveApproval } from './approvals.js';
 
 // Departments di-fetch dynamic dari DB per tenant — tidak hardcode lagi.
 function getTenantDepartments(tenantId) {
@@ -367,35 +368,9 @@ function attachHandlers(bot, tenantId) {
     if (!sw) return ctx.answerCallbackQuery({ text: 'Swap tidak ditemukan', show_alert: true });
     if (sw.status !== 'pending') return ctx.answerCallbackQuery({ text: 'Sudah diproses sebelumnya', show_alert: true });
     const type = sw.swap_type || (sw.target_staff_id ? 'trade' : 'sick');
-    let err = null;
-    try {
-      if (type === 'trade') {
-        const pDate = sw.partner_date || sw.target_date;
-        const r1 = db.prepare('SELECT shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.requester_id, sw.target_date);
-        const r2 = db.prepare('SELECT shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.target_staff_id, pDate);
-        if (!r1 || !r2) err = 'Schedule sudah berubah';
-        else db.transaction(() => {
-          db.prepare('UPDATE schedule_daily SET shift = ?, is_manual_override = 1 WHERE staff_id = ? AND date = ?').run(r2.shift, sw.requester_id, sw.target_date);
-          db.prepare('UPDATE schedule_daily SET shift = ?, is_manual_override = 1 WHERE staff_id = ? AND date = ?').run(r1.shift, sw.target_staff_id, pDate);
-        })();
-      } else if (type === 'move_off') {
-        const orig = db.prepare('SELECT * FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.requester_id, sw.target_date);
-        const next = db.prepare('SELECT * FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.requester_id, sw.partner_date);
-        if (!orig || orig.status !== 'off' || !next || next.status !== 'work') err = 'Schedule sudah berubah';
-        else {
-          const staff = db.prepare('SELECT current_shift FROM staff WHERE id = ?').get(sw.requester_id);
-          db.transaction(() => {
-            db.prepare("UPDATE schedule_daily SET status='work', shift=?, is_manual_override=1 WHERE staff_id=? AND date=?").run(staff?.current_shift || 'morning', sw.requester_id, sw.target_date);
-            db.prepare("UPDATE schedule_daily SET status='off', is_manual_override=1 WHERE staff_id=? AND date=?").run(sw.requester_id, sw.partner_date);
-          })();
-        }
-      } else if (type === 'sick') {
-        db.prepare(`INSERT INTO schedule_daily(tenant_id,staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,'sick','morning',1)
-                    ON CONFLICT(staff_id,date) DO UPDATE SET status='sick', is_manual_override=1`)
-          .run(sw.tenant_id, sw.requester_id, sw.target_date);
-      }
-    } catch (e) { err = e.message; }
-    if (err) return ctx.answerCallbackQuery({ text: err, show_alert: true });
+
+    const apply = applySwapApproval(sw);
+    if (apply.error) return ctx.answerCallbackQuery({ text: apply.error, show_alert: true });
 
     db.prepare('UPDATE swap_requests SET status = ? WHERE id = ?').run('approved', swapId);
     emitLiveUpdate(tenantId, 'swap_approved', { swap_id: swapId });
@@ -409,7 +384,6 @@ function attachHandlers(bot, tenantId) {
     const newText = orig + `\n\n━━━━━━━━━━━━\n✅ APPROVED oleh ${by}`;
     try { await ctx.editMessageText(newText, { reply_markup: { inline_keyboard: [] } }); } catch {}
     await ctx.answerCallbackQuery({ text: '✅ Approved!' });
-    // Kirim snapshot AFTER ke monitor group (state sudah ter-update di DB)
     pushSwapResultSnapshot(tenantId, sw).catch(() => {});
   });
 
@@ -442,21 +416,8 @@ function attachHandlers(bot, tenantId) {
     const lr = db.prepare('SELECT * FROM leave_requests WHERE id = ? AND tenant_id = ?').get(leaveId, tenantId);
     if (!lr) return ctx.answerCallbackQuery({ text: 'Leave request tidak ditemukan', show_alert: true });
     if (lr.status !== 'pending') return ctx.answerCallbackQuery({ text: 'Sudah diproses sebelumnya', show_alert: true });
-    try {
-      const start = new Date(lr.start_date + 'T00:00:00');
-      const end = new Date(lr.end_date + 'T00:00:00');
-      db.transaction(() => {
-        for (let t = start.getTime(); t <= end.getTime(); t += 86400000) {
-          const ds = new Date(t).toISOString().slice(0, 10);
-          db.prepare(`INSERT INTO schedule_daily(tenant_id,staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,'leave','morning',1)
-                      ON CONFLICT(staff_id,date) DO UPDATE SET status='leave', is_manual_override=1`)
-            .run(lr.tenant_id, lr.staff_id, ds);
-        }
-        db.prepare("UPDATE leave_requests SET status = 'approved', decided_at = CURRENT_TIMESTAMP WHERE id = ?").run(leaveId);
-      })();
-    } catch (e) {
-      return ctx.answerCallbackQuery({ text: e.message || 'Gagal apply leave', show_alert: true });
-    }
+    const apply = applyLeaveApproval(lr);
+    if (apply.error) return ctx.answerCallbackQuery({ text: apply.error, show_alert: true });
     emitLiveUpdate(tenantId, 'leave_approved', { leave_id: leaveId });
     const requester = db.prepare('SELECT name, telegram_id FROM staff WHERE id = ?').get(lr.staff_id);
     if (requester?.telegram_id) {

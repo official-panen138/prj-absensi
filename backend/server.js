@@ -10,6 +10,7 @@ import { existsSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { db, getSetting, setSetting, getDefaultTenantId, getTenantSetting, setTenantSetting } from './db.js';
 import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest, pushSwapResultSnapshot, notifyLeaveRequest, pushLeaveResultSnapshot, notifyDailyOffSummary } from './bot.js';
+import { applySwapApproval, applyLeaveApproval, calculateProductiveRatio } from './approvals.js';
 import { liveBus, emitLiveUpdate } from './events.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -694,39 +695,6 @@ app.get('/api/swap/history', auth, (req, res) => {
   const sc = scopeTenant(req, 'sw.tenant_id');
   ok(res, db.prepare(swapJoinBase + ' WHERE 1=1' + sc.clause + ' ORDER BY sw.created_at DESC').all(...sc.params));
 });
-// Helper: apply swap approval — update schedule_daily otomatis berdasarkan swap_type
-function applySwapApproval(sw) {
-  const type = sw.swap_type || (sw.target_staff_id ? 'trade' : 'sick');
-  if (type === 'trade') {
-    const partnerDate = sw.partner_date || sw.target_date;
-    const reqSched = db.prepare('SELECT shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.requester_id, sw.target_date);
-    const partnerSched = db.prepare('SELECT shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.target_staff_id, partnerDate);
-    if (!reqSched || !partnerSched) return { error: 'Schedule sudah berubah, swap tidak valid lagi' };
-    db.transaction(() => {
-      db.prepare('UPDATE schedule_daily SET shift = ?, is_manual_override = 1 WHERE staff_id = ? AND date = ?').run(partnerSched.shift, sw.requester_id, sw.target_date);
-      db.prepare('UPDATE schedule_daily SET shift = ?, is_manual_override = 1 WHERE staff_id = ? AND date = ?').run(reqSched.shift, sw.target_staff_id, partnerDate);
-    })();
-  } else if (type === 'move_off') {
-    // target_date = off asli → jadi work; partner_date = tanggal baru → jadi off
-    const original = db.prepare('SELECT * FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.requester_id, sw.target_date);
-    const newDate = db.prepare('SELECT * FROM schedule_daily WHERE staff_id = ? AND date = ?').get(sw.requester_id, sw.partner_date);
-    if (!original || original.status !== 'off') return { error: 'Off day asli sudah berubah, swap tidak valid' };
-    if (!newDate || newDate.status !== 'work') return { error: 'Tanggal baru sudah berubah / bukan work, swap tidak valid' };
-    const staff = db.prepare('SELECT current_shift FROM staff WHERE id = ?').get(sw.requester_id);
-    db.transaction(() => {
-      db.prepare("UPDATE schedule_daily SET status = 'work', shift = ?, is_manual_override = 1 WHERE staff_id = ? AND date = ?")
-        .run(staff?.current_shift || 'morning', sw.requester_id, sw.target_date);
-      db.prepare("UPDATE schedule_daily SET status = 'off', is_manual_override = 1 WHERE staff_id = ? AND date = ?")
-        .run(sw.requester_id, sw.partner_date);
-    })();
-  } else if (type === 'sick') {
-    db.prepare(`INSERT INTO schedule_daily(tenant_id,staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,'sick','morning',1)
-                ON CONFLICT(staff_id,date) DO UPDATE SET status='sick', is_manual_override=1`)
-      .run(sw.tenant_id, sw.requester_id, sw.target_date);
-  }
-  return { ok: true };
-}
-
 app.put('/api/swap/:id/approve', auth, (req, res) => {
   const id = +req.params.id;
   const sc = scopeTenant(req);
@@ -834,18 +802,8 @@ app.put('/api/leave/:id/approve', auth, (req, res) => {
   const lr = db.prepare('SELECT * FROM leave_requests WHERE id = ?' + sc.clause).get(id, ...sc.params);
   if (!lr) return fail(res, 404, 'Not found or not in your tenant');
   if (lr.status !== 'pending') return fail(res, 400, 'Already processed');
-  // Apply: set schedule_daily.status = 'leave' for each date in range
-  const start = new Date(lr.start_date + 'T00:00:00');
-  const end = new Date(lr.end_date + 'T00:00:00');
-  db.transaction(() => {
-    for (let t = start.getTime(); t <= end.getTime(); t += 86400000) {
-      const ds = new Date(t).toISOString().slice(0, 10);
-      db.prepare(`INSERT INTO schedule_daily(tenant_id,staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,'leave','morning',1)
-                  ON CONFLICT(staff_id,date) DO UPDATE SET status='leave', is_manual_override=1`)
-        .run(lr.tenant_id, lr.staff_id, ds);
-    }
-    db.prepare("UPDATE leave_requests SET status = 'approved', decided_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
-  })();
+  const apply = applyLeaveApproval(lr);
+  if (apply.error) return fail(res, 400, apply.error);
   emitLiveUpdate(lr.tenant_id, 'leave_approved', { leave_id: id });
   pushLeaveResultSnapshot(lr.tenant_id, lr).catch(() => {});
   ok(res, { id });
@@ -1764,13 +1722,12 @@ function clockOutImpl(req, res) {
   const breakMin = att.total_break_minutes || 0;
   const workMin = Math.max(0, totalMin - breakMin);
 
-  // === Formula Productivity baru (cumulative berdasar baseline shift) ===
+  // === Formula Productivity (cumulative berdasar baseline shift) ===
   const expectedWork = computeExpectedWorkMinutes(req.staff.tenant_id, req.staff.department_id, att.shift);
   const breakQuota = getTotalBreakQuota(req.staff.tenant_id, req.staff.department_id);
   const overbreakMin = Math.max(0, breakMin - breakQuota);
   const lateMin = att.late_minutes || 0;
-  const productiveScore = Math.max(0, expectedWork - lateMin - overbreakMin);
-  const productive = expectedWork > 0 ? Math.round((productiveScore / expectedWork) * 1000) / 10 : 0;
+  const { score: productiveScore, ratio: productive } = calculateProductiveRatio(expectedWork, lateMin, overbreakMin);
 
   db.prepare(`UPDATE attendance SET clock_out = ?, current_status = ?,
               total_work_minutes = ?, productive_ratio = ?,
