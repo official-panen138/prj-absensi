@@ -320,6 +320,29 @@ app.get('/api/activity/live/stream', (req, res) => {
   });
 });
 
+// Diagnostic: cek raw counts attendance hari ini & kemarin
+app.get('/api/activity/live/debug', auth, (req, res) => {
+  const today = todayPP();
+  const yesterday = previousDate(today);
+  const sc = scopeTenant(req);
+  const todayAtt = db.prepare(`SELECT id, staff_id, date, shift, clock_in, clock_out, current_status FROM attendance WHERE date = ?${sc.clause} ORDER BY clock_in DESC`).all(today, ...sc.params);
+  const yesterdayOpen = db.prepare(`SELECT id, staff_id, date, shift, clock_in, clock_out, current_status FROM attendance WHERE date = ? AND clock_out IS NULL${sc.clause}`).all(yesterday, ...sc.params);
+  const totalActive = db.prepare(`SELECT COUNT(*) AS c FROM staff WHERE is_active = 1${sc.clause.replace('tenant_id', 'tenant_id')}`).get(...sc.params).c;
+  const breakdown = {};
+  todayAtt.forEach((a) => { breakdown[a.current_status || 'null'] = (breakdown[a.current_status || 'null'] || 0) + 1; });
+  ok(res, {
+    today,
+    yesterday,
+    tenant_id: req.tenant_id || 'all',
+    total_active_staff: totalActive,
+    today_attendance_count: todayAtt.length,
+    today_attendance_status_breakdown: breakdown,
+    yesterday_open_count: yesterdayOpen.length,
+    today_attendance_sample: todayAtt.slice(0, 5),
+    yesterday_open_sample: yesterdayOpen.slice(0, 5),
+  });
+});
+
 app.get('/api/activity/live', auth, (req, res) => {
   const today = todayPP();
   const yesterday = previousDate(today);
