@@ -484,6 +484,9 @@ app.post('/api/schedule/generate', auth, (req, res) => {
     });
   });
   tx();
+  if (todayPP().startsWith(ym)) {
+    try { syncStaffShiftsFromDaily(tid, todayPP()); } catch {}
+  }
   ok(res, { month: ym, staff_affected: staff.length, department: dept });
 });
 
@@ -521,6 +524,10 @@ app.post('/api/schedule/:ym/copy-last-month', auth, (req, res) => {
     });
   });
   tx();
+  // Sync staff.current_shift kalau bulan yang di-copy mencakup hari ini
+  if (todayPP().startsWith(ym)) {
+    try { syncStaffShiftsFromDaily(tid, todayPP()); } catch {}
+  }
   res.json({ success: true, message: `Copied ${prevDays.length} entries from ${prevYm}${dept ? ` (${dept})` : ''}` });
 });
 
@@ -543,6 +550,9 @@ app.post('/api/schedule/:ym/import', auth, (req, res) => {
     }
   });
   tx();
+  if (todayPP().startsWith(ym)) {
+    try { syncStaffShiftsFromDaily(tid, todayPP()); } catch {}
+  }
   res.json({ success: true, message: `Imported ${imported} entries${errors.length ? ` (${errors.length} errors)` : ''}`, errors });
 });
 
@@ -609,13 +619,18 @@ app.post('/api/schedule/daily', auth, (req, res) => {
   const r = db.prepare(`INSERT INTO schedule_daily(tenant_id,staff_id,date,status,shift,is_manual_override) VALUES(?,?,?,?,?,?)
                         ON CONFLICT(staff_id,date) DO UPDATE SET status=excluded.status, shift=excluded.shift, is_manual_override=excluded.is_manual_override`)
                 .run(s.tenant_id, staff_id, date, status || 'work', shift || 'morning', is_manual_override ? 1 : 0);
+  // Kalau edit jadwal hari ini → sync staff.current_shift langsung supaya Staff page update
+  if (date === todayPP()) {
+    try { syncStaffShiftsFromDaily(s.tenant_id, date); } catch {}
+  }
+  emitLiveUpdate(s.tenant_id, 'schedule_edited', { staff_id, date });
   ok(res, { id: r.lastInsertRowid || null });
 });
 
 app.put('/api/schedule/daily/:id', auth, (req, res) => {
   const id = +req.params.id;
   const sc = scopeTenant(req);
-  const existing = db.prepare('SELECT id FROM schedule_daily WHERE id = ?' + sc.clause).get(id, ...sc.params);
+  const existing = db.prepare('SELECT id, tenant_id, staff_id, date FROM schedule_daily WHERE id = ?' + sc.clause).get(id, ...sc.params);
   if (!existing) return fail(res, 404, 'Not found or not in your tenant');
   const { status, shift, is_manual_override } = req.body || {};
   const fields = [], values = [];
@@ -625,6 +640,10 @@ app.put('/api/schedule/daily/:id', auth, (req, res) => {
   if (!fields.length) return ok(res, { id });
   values.push(id);
   db.prepare(`UPDATE schedule_daily SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  if (existing.date === todayPP()) {
+    try { syncStaffShiftsFromDaily(existing.tenant_id, existing.date); } catch {}
+  }
+  emitLiveUpdate(existing.tenant_id, 'schedule_edited', { staff_id: existing.staff_id, date: existing.date });
   ok(res, { id });
 });
 
