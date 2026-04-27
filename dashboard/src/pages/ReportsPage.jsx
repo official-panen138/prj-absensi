@@ -263,7 +263,7 @@ function ReportTable({ data, type, thCls, tdCls, onResetStaff }) {
   const headers = {
     attendance: ['#', 'Name', 'Dept', 'Shift', 'Present', 'Off', 'Late(m)', 'Work(hrs)', 'Break(hrs)', 'Productive(%)'],
     violations: ['Name', 'Dept', 'Break Type', 'Duration', 'Limit', 'Over(m)', 'Date'],
-    productivity: ['#', 'Name', 'Dept', 'Shift', 'Days', 'Avg Productive', 'Avg Work(m)', 'Avg Break(m)', 'OT Breaks', 'Aksi'],
+    productivity: ['#', 'Name', 'Dept', 'Shift', 'Days', 'Productive', 'Expected (m)', 'Late (m)', 'Overbreak (m)', 'Score (m)', 'Aksi'],
   };
 
   return (
@@ -295,24 +295,24 @@ function ReportTable({ data, type, thCls, tdCls, onResetStaff }) {
               </tr>
             );
             if (type === 'productivity') {
-              const ratio = parseFloat(r.avg_productive_ratio || 0);
+              const ratio = parseFloat(r.cumulative_productive_ratio ?? r.avg_productive_ratio ?? 0);
               const barC = ratio >= 80 ? 'bg-emerald-400' : ratio >= 60 ? 'bg-yellow-400' : 'bg-red-400';
               const textC = ratio >= 80 ? 'text-emerald-400' : ratio >= 60 ? 'text-yellow-400' : 'text-red-400';
-              const dw = parseInt(r.days_worked) || 1;
               return (
                 <tr key={r.staff_id || i} className="border-b border-gray-800">
                   <td className={`${tdCls} text-gray-500`}>{i + 1}</td><td className={`${tdCls} font-semibold`}>{r.name}</td><td className={tdCls}>{r.department}</td>
                   <td className={tdCls}><Badge color={r.current_shift === 'morning' ? 'green' : r.current_shift === 'middle' ? 'yellow' : 'purple'}>{r.current_shift}</Badge></td>
                   <td className={tdCls}>{r.days_worked || 0}</td>
                   <td className={tdCls}>
-                    <div className="flex items-center gap-1.5">
-                      <div className="w-12 h-1 bg-gray-700 rounded-sm overflow-hidden"><div className={`h-full rounded-sm ${barC}`} style={{ width: `${Math.min(100, ratio)}%` }} /></div>
+                    <div className="flex items-center gap-1.5" title={`Score ${r.total_productive_score || 0} / Expected ${r.total_expected_minutes || 0} menit`}>
+                      <div className="w-14 h-1 bg-gray-700 rounded-sm overflow-hidden"><div className={`h-full rounded-sm ${barC}`} style={{ width: `${Math.min(100, ratio)}%` }} /></div>
                       <span className={`font-mono ${textC}`}>{ratio.toFixed(1)}%</span>
                     </div>
                   </td>
-                  <td className={tdCls}>{Math.round((r.total_work_minutes || 0) / dw)}</td>
-                  <td className={tdCls}>{Math.round((r.total_break_minutes || 0) / dw)}</td>
-                  <td className={`${tdCls} ${(r.overtime_breaks || 0) > 0 ? 'text-red-400' : 'text-gray-500'}`}>{r.overtime_breaks || 0}</td>
+                  <td className={`${tdCls} font-mono text-gray-400`}>{r.total_expected_minutes || 0}</td>
+                  <td className={`${tdCls} font-mono ${(r.total_late_minutes || 0) > 0 ? 'text-amber-400' : 'text-gray-500'}`}>{r.total_late_minutes || 0}</td>
+                  <td className={`${tdCls} font-mono ${(r.total_overbreak_minutes || 0) > 0 ? 'text-red-400' : 'text-gray-500'}`}>{r.total_overbreak_minutes || 0}</td>
+                  <td className={`${tdCls} font-mono ${textC}`}>{r.total_productive_score || 0}</td>
                   <td className={tdCls}>
                     {onResetStaff && (
                       <button

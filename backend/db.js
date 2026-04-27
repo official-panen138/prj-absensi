@@ -209,6 +209,20 @@ function migrateV2_MultiTenant() {
     );
     CREATE INDEX IF NOT EXISTS idx_dept_tenant ON departments(tenant_id);
   `);
+  // attendance: kolom tambahan untuk cumulative productivity score
+  if (!hasColumn('attendance', 'expected_work_minutes')) {
+    db.exec('ALTER TABLE attendance ADD COLUMN expected_work_minutes INTEGER DEFAULT 0');
+    console.log('[db] added expected_work_minutes to attendance');
+  }
+  if (!hasColumn('attendance', 'productive_score')) {
+    db.exec('ALTER TABLE attendance ADD COLUMN productive_score INTEGER DEFAULT 0');
+    console.log('[db] added productive_score to attendance');
+  }
+  if (!hasColumn('attendance', 'overbreak_minutes')) {
+    db.exec('ALTER TABLE attendance ADD COLUMN overbreak_minutes INTEGER DEFAULT 0');
+    console.log('[db] added overbreak_minutes to attendance');
+  }
+
   // departments: assistant (wakil kepala) — additive migration
   if (!hasColumn('departments', 'assistant_telegram_id')) {
     db.exec('ALTER TABLE departments ADD COLUMN assistant_telegram_id TEXT');

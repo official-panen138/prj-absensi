@@ -885,6 +885,10 @@ app.get('/api/reports/productivity/:ym', auth, (req, res) => {
   const rows = db.prepare(`
     SELECT s.id AS staff_id, s.name, s.department, s.current_shift,
            COUNT(DISTINCT a.date) AS days_worked,
+           COALESCE(SUM(a.late_minutes),0) AS total_late_minutes,
+           COALESCE(SUM(a.overbreak_minutes),0) AS total_overbreak_minutes,
+           COALESCE(SUM(a.expected_work_minutes),0) AS total_expected_minutes,
+           COALESCE(SUM(a.productive_score),0) AS total_productive_score,
            COALESCE(AVG(a.productive_ratio),0) AS avg_productive_ratio,
            COALESCE(SUM(a.total_work_minutes),0) AS total_work_minutes,
            COALESCE(SUM(a.total_break_minutes),0) AS total_break_minutes,
@@ -893,8 +897,14 @@ app.get('/api/reports/productivity/:ym', auth, (req, res) => {
     LEFT JOIN attendance a ON a.staff_id = s.id AND a.date BETWEEN ? AND ?
     WHERE s.is_active = 1${sc.clause}${df.clause}
     GROUP BY s.id
-    ORDER BY avg_productive_ratio DESC
   `).all(start, end, ...sc.params, ...df.params);
+  // Hitung cumulative_productive_ratio = sum(score) / sum(expected) * 100
+  rows.forEach((r) => {
+    r.cumulative_productive_ratio = r.total_expected_minutes > 0
+      ? Math.round((r.total_productive_score / r.total_expected_minutes) * 1000) / 10
+      : 0;
+  });
+  rows.sort((a, b) => (b.cumulative_productive_ratio || 0) - (a.cumulative_productive_ratio || 0));
   ok(res, rows);
 });
 
@@ -1159,6 +1169,34 @@ function getEffectiveShiftTime(tenantId, departmentId, name) {
 
 function previousDate(dateStr) {
   return new Date(new Date(dateStr + 'T00:00:00Z').getTime() - 86400000).toISOString().slice(0, 10);
+}
+
+// Hitung durasi shift dalam menit (handle cross-midnight: end < start = +24h)
+function shiftDurationMinutes(startTime, endTime) {
+  if (!startTime || !endTime) return 0;
+  const [sh, sm] = String(startTime).split(':').map(Number);
+  const [eh, em] = String(endTime).split(':').map(Number);
+  const startM = sh * 60 + sm;
+  let endM = eh * 60 + em;
+  if (endM <= startM) endM += 24 * 60;
+  return endM - startM;
+}
+
+// Total kuota break per hari (sum semua break types) — pakai dept override kalau ada
+function getTotalBreakQuota(tenantId, departmentId) {
+  let total = 0;
+  for (const t of ['smoke', 'toilet', 'outside']) {
+    total += getEffectiveBreakLimit(tenantId, departmentId, t) || 0;
+  }
+  return total;
+}
+
+// Hitung baseline kerja efektif per hari = shift_duration - break_quota
+function computeExpectedWorkMinutes(tenantId, departmentId, shiftName) {
+  const sh = getEffectiveShiftTime(tenantId, departmentId, shiftName);
+  const shiftMin = shiftDurationMinutes(sh.start_time, sh.end_time);
+  const breakQuota = getTotalBreakQuota(tenantId, departmentId);
+  return Math.max(0, shiftMin - breakQuota);
 }
 
 // Hitung kapan tombol Start aktif: shift_start - offset_minutes (dalam WIB hari ini).
@@ -1588,11 +1626,29 @@ function clockOutImpl(req, res) {
   const totalMin = Math.round((now - new Date(att.clock_in)) / 60000);
   const breakMin = att.total_break_minutes || 0;
   const workMin = Math.max(0, totalMin - breakMin);
-  const productive = totalMin > 0 ? Math.round((workMin / totalMin) * 100) : 0;
-  db.prepare('UPDATE attendance SET clock_out = ?, current_status = ?, total_work_minutes = ?, productive_ratio = ? WHERE id = ?')
-    .run(now.toISOString(), 'offline', workMin, productive, att.id);
+
+  // === Formula Productivity baru (cumulative berdasar baseline shift) ===
+  const expectedWork = computeExpectedWorkMinutes(req.staff.tenant_id, req.staff.department_id, att.shift);
+  const breakQuota = getTotalBreakQuota(req.staff.tenant_id, req.staff.department_id);
+  const overbreakMin = Math.max(0, breakMin - breakQuota);
+  const lateMin = att.late_minutes || 0;
+  const productiveScore = Math.max(0, expectedWork - lateMin - overbreakMin);
+  const productive = expectedWork > 0 ? Math.round((productiveScore / expectedWork) * 1000) / 10 : 0;
+
+  db.prepare(`UPDATE attendance SET clock_out = ?, current_status = ?,
+              total_work_minutes = ?, productive_ratio = ?,
+              expected_work_minutes = ?, productive_score = ?, overbreak_minutes = ?
+              WHERE id = ?`)
+    .run(now.toISOString(), 'offline', workMin, productive, expectedWork, productiveScore, overbreakMin, att.id);
   emitLiveUpdate(req.staff.tenant_id, 'clock_out', { staff_id: req.staff.id });
-  ok(res, { clock_out: now.toISOString(), total_work_minutes: workMin, productive_ratio: productive });
+  ok(res, {
+    clock_out: now.toISOString(),
+    total_work_minutes: workMin,
+    productive_ratio: productive,
+    expected_work_minutes: expectedWork,
+    productive_score: productiveScore,
+    overbreak_minutes: overbreakMin,
+  });
 }
 
 app.post('/api/bot/break-start', tgAuth, async (req, res) => {
