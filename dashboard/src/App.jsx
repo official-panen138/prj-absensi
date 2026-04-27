@@ -75,7 +75,7 @@ export default function App() {
       case 'schedule': return <SchedulePage token={auth.token} user={auth.user} />;
       case 'staff': return <StaffPage token={auth.token} />;
       case 'swap': return <SwapRequestsPage token={auth.token} />;
-      case 'reports': return <ReportsPage token={auth.token} />;
+      case 'reports': return <ReportsPage token={auth.token} user={auth.user} />;
       case 'activity': return <ActivityLogPage token={auth.token} />;
       case 'settings': return <SettingsPage token={auth.token} user={auth.user} />;
       case 'tenants': return <TenantsPage token={auth.token} />;

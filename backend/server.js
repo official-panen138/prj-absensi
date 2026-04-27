@@ -925,6 +925,36 @@ app.get('/api/reports/export/:ym', auth, async (req, res) => {
   res.end();
 });
 
+// ============ RESET TEST DATA (admin only) ============
+// Reset attendance + break_log untuk 1 staff dalam date range (default: bulan dipilih).
+app.delete('/api/reports/reset-staff/:staffId', auth, (req, res) => {
+  if (req.user?.role !== 'admin' && req.user?.role !== 'super_admin') return fail(res, 403, 'Admin only');
+  const staffId = +req.params.staffId;
+  const sc = scopeTenant(req);
+  const staff = db.prepare('SELECT id, name, tenant_id FROM staff WHERE id = ?' + sc.clause).get(staffId, ...sc.params);
+  if (!staff) return fail(res, 404, 'Staff tidak ditemukan / bukan tenant Anda');
+  const { from, to } = req.query;
+  if (!from || !to) return fail(res, 400, 'from & to (YYYY-MM-DD) wajib');
+  const att = db.prepare('DELETE FROM attendance WHERE staff_id = ? AND date BETWEEN ? AND ?').run(staffId, from, to);
+  const brk = db.prepare("DELETE FROM break_log WHERE staff_id = ? AND DATE(start_time) BETWEEN ? AND ?").run(staffId, from, to);
+  emitLiveUpdate(staff.tenant_id, 'data_reset', { staff_id: staffId });
+  ok(res, { staff_name: staff.name, attendance_deleted: att.changes, break_log_deleted: brk.changes, range: { from, to } });
+});
+
+// Reset SEMUA staff dalam tenant + date range (untuk testing). Wajib pass confirm=YES.
+app.delete('/api/reports/reset-all', auth, (req, res) => {
+  if (req.user?.role !== 'admin' && req.user?.role !== 'super_admin') return fail(res, 403, 'Admin only');
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
+  const { from, to, confirm } = req.query;
+  if (!from || !to) return fail(res, 400, 'from & to (YYYY-MM-DD) wajib');
+  if (confirm !== 'YES') return fail(res, 400, 'Tambah confirm=YES untuk konfirmasi reset semua staff');
+  const att = db.prepare('DELETE FROM attendance WHERE tenant_id = ? AND date BETWEEN ? AND ?').run(tid, from, to);
+  const brk = db.prepare("DELETE FROM break_log WHERE tenant_id = ? AND DATE(start_time) BETWEEN ? AND ?").run(tid, from, to);
+  emitLiveUpdate(tid, 'data_reset', { all: true });
+  ok(res, { tenant_id: tid, attendance_deleted: att.changes, break_log_deleted: brk.changes, range: { from, to } });
+});
+
 // ============ SETTINGS ============
 app.get('/api/settings', auth, (req, res) => {
   const tid = writeTenantId(req);

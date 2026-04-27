@@ -19,7 +19,7 @@ function getWeeksOfMonth(ym) {
   return weeks;
 }
 
-export default function ReportsPage({ token }) {
+export default function ReportsPage({ token, user }) {
   const [month, setMonth] = useState(currentYM());
   const [period, setPeriod] = useState('monthly'); // daily | weekly | monthly
   const [dailyDate, setDailyDate] = useState(todayISO());
@@ -100,6 +100,36 @@ export default function ReportsPage({ token }) {
     } catch (e) { setToast({ type: 'error', text: e.message }); }
   };
 
+  const computeRange = () => {
+    if (periodFrom && periodTo) return { from: periodFrom, to: periodTo };
+    const [y, m] = month.split('-').map(Number);
+    const last = new Date(y, m, 0).getDate();
+    return { from: `${month}-01`, to: `${month}-${String(last).padStart(2, '0')}` };
+  };
+
+  const resetStaffData = async (staffId, name) => {
+    const { from, to } = computeRange();
+    if (!window.confirm(`Reset attendance & break log untuk "${name}" dari ${from} sampai ${to}?\n\nTidak bisa di-undo!`)) return;
+    try {
+      const res = await apiFetch(token, `/reports/reset-staff/${staffId}?from=${from}&to=${to}`, { method: 'DELETE' });
+      const d = res.data || {};
+      setToast({ type: 'ok', text: `✓ ${name}: hapus ${d.attendance_deleted || 0} attendance + ${d.break_log_deleted || 0} break.` });
+      fetchReport();
+    } catch (e) { setToast({ type: 'error', text: e.message }); }
+  };
+
+  const resetAllData = async () => {
+    const { from, to } = computeRange();
+    if (!window.confirm(`⚠ RESET SEMUA STAFF dari ${from} sampai ${to}?\n\nIni akan hapus SEMUA attendance & break log dalam periode tersebut. Tidak bisa di-undo!`)) return;
+    if (!window.confirm(`KONFIRMASI TERAKHIR: ketik OK kalau yakin reset SEMUA data ${from} - ${to}?`)) return;
+    try {
+      const res = await apiFetch(token, `/reports/reset-all?from=${from}&to=${to}&confirm=YES`, { method: 'DELETE' });
+      const d = res.data || {};
+      setToast({ type: 'ok', text: `✓ Reset all: hapus ${d.attendance_deleted || 0} attendance + ${d.break_log_deleted || 0} break.` });
+      fetchReport();
+    } catch (e) { setToast({ type: 'error', text: e.message }); }
+  };
+
   const TABS = ['summary', 'attendance', 'violations', 'productivity'];
   const tabLabels = { summary: 'Summary', attendance: 'Attendance', violations: 'Violations', productivity: 'Productivity' };
   const thCls = 'px-3 py-2.5 text-left font-bold text-[11px] text-gray-500 whitespace-nowrap tracking-wide border-b border-gray-700';
@@ -132,6 +162,11 @@ export default function ReportsPage({ token }) {
           })()}
           <Btn size="sm" variant="ghost" onClick={fetchReport}>↻</Btn>
           <Btn size="sm" variant="success" onClick={exportXlsx}>Export</Btn>
+          {user?.role === 'admin' && (
+            <Btn size="sm" variant="ghost" className="text-red-400 border-red-400/30" onClick={resetAllData} title="Reset semua attendance & break dalam periode">
+              ↺ Reset All
+            </Btn>
+          )}
         </div>
       </div>
 
@@ -180,7 +215,7 @@ export default function ReportsPage({ token }) {
         {tab === 'summary' && <ReportSummary data={data.summary} />}
         {tab === 'attendance' && <ReportTable data={data.attendance} type="attendance" thCls={thCls} tdCls={tdCls} />}
         {tab === 'violations' && <ReportTable data={data.violations} type="violations" thCls={thCls} tdCls={tdCls} />}
-        {tab === 'productivity' && <ReportTable data={data.productivity} type="productivity" thCls={thCls} tdCls={tdCls} />}
+        {tab === 'productivity' && <ReportTable data={data.productivity} type="productivity" thCls={thCls} tdCls={tdCls} onResetStaff={user?.role === 'admin' ? resetStaffData : null} />}
       </>}
     </div>
   );
@@ -222,13 +257,13 @@ function ReportSummary({ data }) {
   return <Card className="p-5 text-gray-500">See Attendance tab for details.</Card>;
 }
 
-function ReportTable({ data, type, thCls, tdCls }) {
+function ReportTable({ data, type, thCls, tdCls, onResetStaff }) {
   if (!data?.length) return <Card className={`p-10 text-center ${type === 'violations' ? 'text-emerald-400' : 'text-gray-500'}`}>{type === 'violations' ? 'No violations!' : 'No data.'}</Card>;
 
   const headers = {
     attendance: ['#', 'Name', 'Dept', 'Shift', 'Present', 'Off', 'Late(m)', 'Work(hrs)', 'Break(hrs)', 'Productive(%)'],
     violations: ['Name', 'Dept', 'Break Type', 'Duration', 'Limit', 'Over(m)', 'Date'],
-    productivity: ['#', 'Name', 'Dept', 'Shift', 'Days', 'Avg Productive', 'Avg Work(m)', 'Avg Break(m)', 'OT Breaks'],
+    productivity: ['#', 'Name', 'Dept', 'Shift', 'Days', 'Avg Productive', 'Avg Work(m)', 'Avg Break(m)', 'OT Breaks', 'Aksi'],
   };
 
   return (
@@ -278,6 +313,17 @@ function ReportTable({ data, type, thCls, tdCls }) {
                   <td className={tdCls}>{Math.round((r.total_work_minutes || 0) / dw)}</td>
                   <td className={tdCls}>{Math.round((r.total_break_minutes || 0) / dw)}</td>
                   <td className={`${tdCls} ${(r.overtime_breaks || 0) > 0 ? 'text-red-400' : 'text-gray-500'}`}>{r.overtime_breaks || 0}</td>
+                  <td className={tdCls}>
+                    {onResetStaff && (
+                      <button
+                        title={`Reset data attendance & break ${r.name} dalam range periode ini`}
+                        onClick={() => onResetStaff(r.staff_id, r.name)}
+                        className="px-2 py-1 text-[10px] rounded border border-amber-500/40 text-amber-400 hover:bg-amber-500/10 transition"
+                      >
+                        ↺ Reset
+                      </button>
+                    )}
+                  </td>
                 </tr>
               );
             }
