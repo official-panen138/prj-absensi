@@ -935,6 +935,91 @@ app.get('/api/reports/export/:ym', auth, async (req, res) => {
   res.end();
 });
 
+// Detail produktivitas harian per staff dalam 1 bulan/range
+app.get('/api/reports/productivity-detail/:staffId/:ym', auth, (req, res) => {
+  const staffId = +req.params.staffId;
+  const { start, end } = dateRange(req.params.ym, req.query.from, req.query.to);
+  const sc = scopeTenant(req, 's.tenant_id');
+  const staff = db.prepare('SELECT id, name, department, current_shift FROM staff WHERE id = ?' + sc.clause).get(staffId, ...sc.params);
+  if (!staff) return fail(res, 404, 'Staff tidak ditemukan / bukan tenant Anda');
+
+  // Ambil semua schedule + attendance dalam range, join per tanggal
+  const rows = db.prepare(`
+    SELECT sd.date, sd.status AS sched_status, sd.shift AS sched_shift,
+           a.shift AS att_shift, a.clock_in, a.clock_out,
+           a.late_minutes, a.total_work_minutes, a.total_break_minutes,
+           a.expected_work_minutes, a.productive_score, a.overbreak_minutes,
+           a.productive_ratio
+    FROM schedule_daily sd
+    LEFT JOIN attendance a ON a.staff_id = sd.staff_id AND a.date = sd.date
+    WHERE sd.staff_id = ? AND sd.date BETWEEN ? AND ?
+    ORDER BY sd.date
+  `).all(staffId, start, end);
+
+  // Kalau staff belum punya schedule_daily untuk tanggal tertentu tapi ada attendance,
+  // ambil attendance-nya juga supaya tidak hilang
+  const attOnly = db.prepare(`
+    SELECT a.date, NULL AS sched_status, NULL AS sched_shift,
+           a.shift AS att_shift, a.clock_in, a.clock_out,
+           a.late_minutes, a.total_work_minutes, a.total_break_minutes,
+           a.expected_work_minutes, a.productive_score, a.overbreak_minutes,
+           a.productive_ratio
+    FROM attendance a
+    WHERE a.staff_id = ? AND a.date BETWEEN ? AND ?
+      AND NOT EXISTS (SELECT 1 FROM schedule_daily sd WHERE sd.staff_id = a.staff_id AND sd.date = a.date)
+    ORDER BY a.date
+  `).all(staffId, start, end);
+
+  const merged = [...rows, ...attOnly].sort((a, b) => a.date.localeCompare(b.date));
+
+  // Hitung running cumulative
+  let cumScore = 0, cumExpected = 0;
+  const days = merged.map((r) => {
+    const isWork = r.sched_status === 'work' || (!r.sched_status && r.clock_in);
+    const expected = r.expected_work_minutes || 0;
+    const score = r.productive_score || 0;
+    if (isWork) {
+      cumExpected += expected;
+      cumScore += score;
+    }
+    return {
+      date: r.date,
+      sched_status: r.sched_status || (r.clock_in ? 'work' : null),
+      shift: r.att_shift || r.sched_shift || null,
+      clock_in: r.clock_in,
+      clock_out: r.clock_out,
+      late_minutes: r.late_minutes || 0,
+      work_minutes: r.total_work_minutes || 0,
+      break_minutes: r.total_break_minutes || 0,
+      overbreak_minutes: r.overbreak_minutes || 0,
+      expected_minutes: expected,
+      score: score,
+      daily_ratio: r.productive_ratio || 0,
+      cumulative_score: cumScore,
+      cumulative_expected: cumExpected,
+      cumulative_ratio: cumExpected > 0 ? Math.round((cumScore / cumExpected) * 1000) / 10 : 0,
+    };
+  });
+
+  ok(res, {
+    staff: { id: staff.id, name: staff.name, department: staff.department, current_shift: staff.current_shift },
+    range: { start, end },
+    days,
+    summary: {
+      total_days: days.length,
+      work_days: days.filter((d) => d.sched_status === 'work').length,
+      off_days: days.filter((d) => d.sched_status === 'off').length,
+      sick_days: days.filter((d) => d.sched_status === 'sick').length,
+      leave_days: days.filter((d) => d.sched_status === 'leave').length,
+      total_late_minutes: days.reduce((a, d) => a + d.late_minutes, 0),
+      total_overbreak_minutes: days.reduce((a, d) => a + d.overbreak_minutes, 0),
+      total_expected_minutes: cumExpected,
+      total_productive_score: cumScore,
+      cumulative_ratio: cumExpected > 0 ? Math.round((cumScore / cumExpected) * 1000) / 10 : 0,
+    },
+  });
+});
+
 // ============ RESET TEST DATA (admin only) ============
 // Reset attendance + break_log untuk 1 staff dalam date range (default: bulan dipilih).
 app.delete('/api/reports/reset-staff/:staffId', auth, (req, res) => {

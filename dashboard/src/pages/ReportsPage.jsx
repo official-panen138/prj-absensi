@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { apiFetch, API_BASE } from '../lib/api';
 import { currentYM, todayISO, BREAK_TYPE_LABEL } from '../lib/theme';
-import { Card, Spinner, Toast, Btn, Badge, MonthPicker } from '../components/ui';
+import { Card, Spinner, Toast, Btn, Badge, MonthPicker, Modal } from '../components/ui';
 
 function getWeeksOfMonth(ym) {
   const [y, m] = ym.split('-').map(Number);
@@ -98,6 +98,24 @@ export default function ReportsPage({ token, user }) {
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) { setToast({ type: 'error', text: e.message }); }
+  };
+
+  const [detail, setDetail] = useState(null); // { staff, range, days, summary }
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const openDetail = async (staffId, name) => {
+    setDetailLoading(true);
+    setDetail({ staff: { name }, days: [], summary: {} });
+    try {
+      const { from, to } = computeRange();
+      const res = await apiFetch(token, `/reports/productivity-detail/${staffId}/${month}?from=${from}&to=${to}`);
+      setDetail(res.data);
+    } catch (e) {
+      setToast({ type: 'error', text: e.message });
+      setDetail(null);
+    } finally {
+      setDetailLoading(false);
+    }
   };
 
   const computeRange = () => {
@@ -215,8 +233,67 @@ export default function ReportsPage({ token, user }) {
         {tab === 'summary' && <ReportSummary data={data.summary} />}
         {tab === 'attendance' && <ReportTable data={data.attendance} type="attendance" thCls={thCls} tdCls={tdCls} />}
         {tab === 'violations' && <ReportTable data={data.violations} type="violations" thCls={thCls} tdCls={tdCls} />}
-        {tab === 'productivity' && <ReportTable data={data.productivity} type="productivity" thCls={thCls} tdCls={tdCls} onResetStaff={user?.role === 'admin' ? resetStaffData : null} />}
+        {tab === 'productivity' && <ReportTable data={data.productivity} type="productivity" thCls={thCls} tdCls={tdCls} onResetStaff={user?.role === 'admin' ? resetStaffData : null} onOpenDetail={openDetail} />}
       </>}
+
+      <Modal open={!!detail} onClose={() => setDetail(null)} title={detail?.staff?.name ? `📊 Detail Produktivitas — ${detail.staff.name}` : 'Detail'} width="max-w-5xl">
+        {detailLoading ? <div className="flex justify-center p-10"><Spinner /></div> : detail && (
+          <ProductivityDetail detail={detail} thCls={thCls} tdCls={tdCls} />
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+function ProductivityDetail({ detail, thCls, tdCls }) {
+  const s = detail.summary || {};
+  const ratio = parseFloat(s.cumulative_ratio || 0);
+  const textC = ratio >= 80 ? 'text-emerald-400' : ratio >= 60 ? 'text-yellow-400' : 'text-red-400';
+  return (
+    <div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+        <Card className="p-3"><div className="text-[10px] text-gray-500">CUMULATIVE</div><div className={`text-2xl font-extrabold font-mono ${textC}`}>{ratio.toFixed(1)}%</div></Card>
+        <Card className="p-3"><div className="text-[10px] text-gray-500">SCORE / EXPECTED</div><div className="text-sm font-mono text-emerald-400">{s.total_productive_score || 0} / {s.total_expected_minutes || 0}</div><div className="text-[10px] text-gray-500">menit</div></Card>
+        <Card className="p-3"><div className="text-[10px] text-gray-500">TOTAL LATE</div><div className="text-2xl font-extrabold font-mono text-amber-400">{s.total_late_minutes || 0}m</div></Card>
+        <Card className="p-3"><div className="text-[10px] text-gray-500">TOTAL OVERBREAK</div><div className="text-2xl font-extrabold font-mono text-red-400">{s.total_overbreak_minutes || 0}m</div></Card>
+      </div>
+      <div className="text-[11px] text-gray-500 mb-2">
+        {s.work_days || 0} hari kerja · {s.off_days || 0} off · {s.sick_days || 0} sakit · {s.leave_days || 0} cuti · period {detail.range?.start} → {detail.range?.end}
+      </div>
+      <Card className="overflow-auto max-h-[500px]">
+        <table className="w-full border-collapse text-xs">
+          <thead className="sticky top-0 bg-gray-800 z-10">
+            <tr>{['Tanggal', 'Status', 'Shift', 'In', 'Out', 'Late (m)', 'Work (m)', 'Break (m)', 'Overbreak (m)', 'Expected (m)', 'Score (m)', 'Daily %', 'Cumulative %'].map((h) => <th key={h} className={thCls}>{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {(detail.days || []).map((d, i) => {
+              const isWork = d.sched_status === 'work';
+              const dr = parseFloat(d.daily_ratio || 0);
+              const cr = parseFloat(d.cumulative_ratio || 0);
+              const drCls = dr >= 80 ? 'text-emerald-400' : dr >= 60 ? 'text-yellow-400' : 'text-red-400';
+              const crCls = cr >= 80 ? 'text-emerald-400' : cr >= 60 ? 'text-yellow-400' : 'text-red-400';
+              const statusBadge = d.sched_status === 'work' ? 'green' : d.sched_status === 'off' ? 'gray' : d.sched_status === 'sick' ? 'red' : d.sched_status === 'leave' ? 'blue' : 'gray';
+              return (
+                <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/40">
+                  <td className={`${tdCls} font-mono text-[11px]`}>{d.date}</td>
+                  <td className={tdCls}><Badge color={statusBadge}>{(d.sched_status || '—').toUpperCase()}</Badge></td>
+                  <td className={tdCls}>{d.shift ? <Badge color={d.shift === 'morning' ? 'green' : d.shift === 'middle' ? 'yellow' : 'purple'}>{d.shift}</Badge> : '—'}</td>
+                  <td className={`${tdCls} font-mono text-[11px] text-gray-400`}>{d.clock_in ? new Date(d.clock_in).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                  <td className={`${tdCls} font-mono text-[11px] text-gray-400`}>{d.clock_out ? new Date(d.clock_out).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                  <td className={`${tdCls} font-mono ${(d.late_minutes || 0) > 0 ? 'text-amber-400' : 'text-gray-500'}`}>{d.late_minutes || 0}</td>
+                  <td className={`${tdCls} font-mono`}>{d.work_minutes || 0}</td>
+                  <td className={`${tdCls} font-mono`}>{d.break_minutes || 0}</td>
+                  <td className={`${tdCls} font-mono ${(d.overbreak_minutes || 0) > 0 ? 'text-red-400' : 'text-gray-500'}`}>{d.overbreak_minutes || 0}</td>
+                  <td className={`${tdCls} font-mono text-gray-400`}>{d.expected_minutes || 0}</td>
+                  <td className={`${tdCls} font-mono ${isWork ? drCls : 'text-gray-500'}`}>{d.score || 0}</td>
+                  <td className={`${tdCls} font-mono ${isWork ? drCls : 'text-gray-500'}`}>{isWork ? `${dr.toFixed(1)}%` : '—'}</td>
+                  <td className={`${tdCls} font-mono ${crCls} font-bold`}>{cr.toFixed(1)}%</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
     </div>
   );
 }
@@ -257,7 +334,7 @@ function ReportSummary({ data }) {
   return <Card className="p-5 text-gray-500">See Attendance tab for details.</Card>;
 }
 
-function ReportTable({ data, type, thCls, tdCls, onResetStaff }) {
+function ReportTable({ data, type, thCls, tdCls, onResetStaff, onOpenDetail }) {
   if (!data?.length) return <Card className={`p-10 text-center ${type === 'violations' ? 'text-emerald-400' : 'text-gray-500'}`}>{type === 'violations' ? 'No violations!' : 'No data.'}</Card>;
 
   const headers = {
@@ -300,7 +377,15 @@ function ReportTable({ data, type, thCls, tdCls, onResetStaff }) {
               const textC = ratio >= 80 ? 'text-emerald-400' : ratio >= 60 ? 'text-yellow-400' : 'text-red-400';
               return (
                 <tr key={r.staff_id || i} className="border-b border-gray-800">
-                  <td className={`${tdCls} text-gray-500`}>{i + 1}</td><td className={`${tdCls} font-semibold`}>{r.name}</td><td className={tdCls}>{r.department}</td>
+                  <td className={`${tdCls} text-gray-500`}>{i + 1}</td>
+                  <td className={`${tdCls} font-semibold`}>
+                    {onOpenDetail ? (
+                      <button onClick={() => onOpenDetail(r.staff_id, r.name)} className="text-emerald-400 hover:underline cursor-pointer text-left">
+                        {r.name}
+                      </button>
+                    ) : r.name}
+                  </td>
+                  <td className={tdCls}>{r.department}</td>
                   <td className={tdCls}><Badge color={r.current_shift === 'morning' ? 'green' : r.current_shift === 'middle' ? 'yellow' : 'purple'}>{r.current_shift}</Badge></td>
                   <td className={tdCls}>{r.days_worked || 0}</td>
                   <td className={tdCls}>
