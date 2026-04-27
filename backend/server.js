@@ -322,19 +322,27 @@ app.get('/api/activity/live/stream', (req, res) => {
 
 app.get('/api/activity/live', auth, (req, res) => {
   const today = todayPP();
+  const yesterday = previousDate(today);
   const sc = scopeTenant(req, 's.tenant_id');
+  // Subquery pilih attendance terbaik: prefer hari ini, fallback shift kemarin yg masih open
   const staff = db.prepare(`
     SELECT s.id, s.tenant_id, s.name, s.department, s.category, s.current_shift,
-           a.clock_in, a.clock_out, a.late_minutes, a.current_status,
+           a.date AS att_date, a.shift AS att_shift, a.clock_in, a.clock_out, a.late_minutes, a.current_status,
            a.break_start, a.break_limit,
            sd.status AS schedule_status,
            sd.shift AS scheduled_shift
     FROM staff s
-    LEFT JOIN attendance a ON a.staff_id = s.id AND a.date = ?
+    LEFT JOIN attendance a ON a.id = (
+      SELECT a2.id FROM attendance a2
+      WHERE a2.staff_id = s.id
+        AND (a2.date = ? OR (a2.date = ? AND a2.clock_out IS NULL))
+      ORDER BY (a2.date = ?) DESC, a2.date DESC
+      LIMIT 1
+    )
     LEFT JOIN schedule_daily sd ON sd.staff_id = s.id AND sd.date = ?
     WHERE s.is_active = 1${sc.clause}
     ORDER BY s.name
-  `).all(today, today, ...sc.params);
+  `).all(today, yesterday, today, today, ...sc.params);
 
   // Shift yang efektif hari ini: dari schedule_daily (kalau ada) atau fallback ke current_shift
   staff.forEach((s) => {
