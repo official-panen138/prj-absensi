@@ -233,7 +233,10 @@ export default function ReportsPage({ token, user }) {
         {tab === 'summary' && <ReportSummary data={data.summary} />}
         {tab === 'attendance' && <ReportTable data={data.attendance} type="attendance" thCls={thCls} tdCls={tdCls} />}
         {tab === 'violations' && <ReportTable data={data.violations} type="violations" thCls={thCls} tdCls={tdCls} />}
-        {tab === 'productivity' && <ReportTable data={data.productivity} type="productivity" thCls={thCls} tdCls={tdCls} onResetStaff={user?.role === 'admin' ? resetStaffData : null} onOpenDetail={openDetail} />}
+        {tab === 'productivity' && <>
+          <ProductivityFormula />
+          <ReportTable data={data.productivity} type="productivity" thCls={thCls} tdCls={tdCls} onResetStaff={user?.role === 'admin' ? resetStaffData : null} onOpenDetail={openDetail} />
+        </>}
       </>}
 
       <Modal open={!!detail} onClose={() => setDetail(null)} title={detail?.staff?.name ? `📊 Detail Produktivitas — ${detail.staff.name}` : 'Detail'} width="max-w-5xl">
@@ -242,6 +245,117 @@ export default function ReportsPage({ token, user }) {
         )}
       </Modal>
     </div>
+  );
+}
+
+function ProductivityFormula() {
+  const [open, setOpen] = useState(false);
+  return (
+    <Card className="mb-4 overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-800/50 transition cursor-pointer text-left"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-lg">📐</span>
+          <span className="font-bold text-sm text-emerald-400">Cara Hitung Produktivitas</span>
+          <span className="text-[11px] text-gray-500 hidden sm:inline">— klik untuk {open ? 'tutup' : 'lihat rumus'}</span>
+        </div>
+        <span className="text-gray-400 text-sm">{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div className="px-4 pb-4 border-t border-gray-800 text-[12px] leading-relaxed">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-3">
+            {/* Per shift */}
+            <div className="bg-gray-900/50 rounded-lg p-3 border border-gray-800">
+              <div className="text-emerald-400 font-bold mb-2">📊 Per Shift (saat Clock-Out)</div>
+              <pre className="text-[11px] font-mono text-gray-400 whitespace-pre-wrap leading-snug">
+{`expected = shift_duration − break_quota
+           // mis. (10:00→22:00 = 720m) − 60m = 660m
+
+late      = clock_in − jadwal_shift_start (kalau telat)
+overbreak = max(0, total_break − break_quota)
+
+score = max(0, expected − late − overbreak)
+daily%  = score / expected × 100`}
+              </pre>
+            </div>
+            {/* Cumulative */}
+            <div className="bg-gray-900/50 rounded-lg p-3 border border-gray-800">
+              <div className="text-emerald-400 font-bold mb-2">📈 Bulanan (Cumulative)</div>
+              <pre className="text-[11px] font-mono text-gray-400 whitespace-pre-wrap leading-snug">
+{`total_expected = SUM(expected_work_minutes)
+                  // mis. 660 × 26 hari = 17.160m
+
+total_score    = SUM(productive_score)
+
+cumulative%   = total_score / total_expected × 100`}
+              </pre>
+            </div>
+          </div>
+
+          {/* Contoh */}
+          <div className="mt-3 bg-gray-900/50 rounded-lg p-3 border border-gray-800">
+            <div className="text-yellow-400 font-bold mb-2">💡 Contoh: Marcel — kerja 26 hari, shift 12h, expected 660m/hari</div>
+            <table className="w-full text-[11px] font-mono">
+              <thead>
+                <tr className="text-gray-500 border-b border-gray-800">
+                  <th className="text-left py-1">Hari</th>
+                  <th className="text-right py-1">Late</th>
+                  <th className="text-right py-1">Overbreak</th>
+                  <th className="text-right py-1">Score</th>
+                  <th className="text-right py-1">Cum Score / Exp</th>
+                  <th className="text-right py-1">Cum %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  ['1', '0', '0', '660', '660 / 660', '100.0%'],
+                  ['2', '20', '20', '620', '1.280 / 1.320', '96.97%'],
+                  ['3', '15', '10', '635', '1.915 / 1.980', '96.72%'],
+                  ['…', '', '', '', '', ''],
+                  ['26', '—', '—', '—', '~16.560 / 17.160', '~96.5%'],
+                ].map((row, i) => (
+                  <tr key={i} className="border-b border-gray-800/50">
+                    <td className="py-1 text-gray-300">{row[0]}</td>
+                    <td className="py-1 text-right text-amber-400">{row[1]}</td>
+                    <td className="py-1 text-right text-red-400">{row[2]}</td>
+                    <td className="py-1 text-right text-emerald-400">{row[3]}</td>
+                    <td className="py-1 text-right text-gray-400">{row[4]}</td>
+                    <td className="py-1 text-right text-emerald-400 font-bold">{row[5]}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Catatan */}
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 text-[11px]">
+            <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3">
+              <div className="text-emerald-400 font-bold mb-1">✓ Yang dihitung</div>
+              <ul className="text-gray-300 space-y-0.5 ml-4 list-disc">
+                <li>Hari status <strong>WORK</strong> dengan attendance lengkap</li>
+                <li>Telat (kalau lewat grace period)</li>
+                <li>Break melebihi kuota harian</li>
+              </ul>
+            </div>
+            <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-3">
+              <div className="text-gray-300 font-bold mb-1">✗ Yang TIDAK dihitung</div>
+              <ul className="text-gray-400 space-y-0.5 ml-4 list-disc">
+                <li>Hari OFF / SAKIT / CUTI (skip dari baseline)</li>
+                <li>Belum clock-out (data belum final)</li>
+                <li>Break di bawah kuota (tidak ada bonus)</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="mt-3 text-[11px] text-gray-500">
+            💡 Klik <span className="text-emerald-400 font-semibold">nama staff</span> di tabel untuk lihat detail per hari (running cumulative).
+            Detail lengkap: <code className="text-gray-400">docs/PRODUCTIVITY.md</code> & <code className="text-gray-400">PRODUCTIVITY_PROPOSAL.pdf</code>
+          </div>
+        </div>
+      )}
+    </Card>
   );
 }
 
