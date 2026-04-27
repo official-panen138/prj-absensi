@@ -658,11 +658,17 @@ async function notifyMonitor(tenantId, text, deptId = null, opts = {}) {
   } catch (e) { console.warn('[bot] notifyMonitor failed:', e.message); }
 }
 
-export async function notifyLate(tenantId, staff, lateMin, shift) {
+export async function notifyLate(tenantId, staff, lateMin, shift, withinGrace = false) {
   const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
   if (muted.includes('late')) return;
   const dept = staff.department ? ` · ${staff.department}` : '';
-  await notifyMonitor(tenantId, `⚠️ *TELAT* — ${staff.name}${dept}\n⏱ ${lateMin} menit · shift _${shift}_`, staff.department_id);
+  const prefix = withinGrace ? '⚠️ *Telat (dalam grace)*' : '⚠️ *TELAT*';
+  const note = withinGrace ? `\n_dalam toleransi — tidak kurangi skor_` : '';
+  await notifyMonitor(
+    tenantId,
+    `${prefix} — ${staff.name}${dept}\n⏱ ${lateMin} menit · shift _${shift}_${note}`,
+    staff.department_id,
+  );
 }
 
 export async function notifyIpViolation(tenantId, staff, action, ip) {

@@ -1690,17 +1690,27 @@ function clockInImpl(req, res) {
   const now = new Date();
   const shiftRow = getEffectiveShiftTime(req.staff.tenant_id, req.staff.department_id, effectiveShift);
   const grace = +(getTenantSetting(req.staff.tenant_id, 'late_grace_minutes', 5));
-  let lateMin = 0;
+  // Hitung actual lateness (apa adanya) — selalu disimpan apa adanya untuk akurasi
+  let actualLate = 0;
   if (shiftRow?.start_time) {
     const [h, m] = shiftRow.start_time.split(':').map(Number);
     const shiftStart = new Date(now); shiftStart.setHours(h, m, 0, 0);
     const diff = Math.round((now - shiftStart) / 60000);
-    if (diff > grace) lateMin = diff;
+    if (diff > 0) actualLate = diff;
   }
   db.prepare('INSERT INTO attendance(tenant_id,staff_id,date,shift,clock_in,late_minutes,ip_address,current_status) VALUES(?,?,?,?,?,?,?,?)')
-    .run(req.staff.tenant_id, req.staff.id, today, effectiveShift, now.toISOString(), lateMin, clientIp.slice(0, 45), 'working');
-  if (lateMin > 0) {
-    notifyLate(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, lateMin, req.staff.current_shift).catch((e) => console.warn('[bot] notifyLate:', e.message));
+    .run(req.staff.tenant_id, req.staff.id, today, effectiveShift, now.toISOString(), actualLate, clientIp.slice(0, 45), 'working');
+  // Notif kirim untuk SETIAP keterlambatan (>= 1 menit) — kepala dept harus tahu
+  // Grace cuma melindungi skor produktivitas, bukan menghilangkan notif
+  if (actualLate >= 1) {
+    const withinGrace = actualLate <= grace;
+    notifyLate(
+      req.staff.tenant_id,
+      { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id },
+      actualLate,
+      effectiveShift,
+      withinGrace,
+    ).catch((e) => console.warn('[bot] notifyLate:', e.message));
   }
   emitLiveUpdate(req.staff.tenant_id, 'clock_in', { staff_id: req.staff.id });
   ok(res, { clock_in: now.toISOString(), late_minutes: lateMin });
@@ -1723,11 +1733,13 @@ function clockOutImpl(req, res) {
   const workMin = Math.max(0, totalMin - breakMin);
 
   // === Formula Productivity (cumulative berdasar baseline shift) ===
+  // Grace minutes melindungi skor: kalau telat dalam grace, tidak dikurangi dari score.
   const expectedWork = computeExpectedWorkMinutes(req.staff.tenant_id, req.staff.department_id, att.shift);
   const breakQuota = getTotalBreakQuota(req.staff.tenant_id, req.staff.department_id);
   const overbreakMin = Math.max(0, breakMin - breakQuota);
-  const lateMin = att.late_minutes || 0;
-  const { score: productiveScore, ratio: productive } = calculateProductiveRatio(expectedWork, lateMin, overbreakMin);
+  const grace = +(getTenantSetting(req.staff.tenant_id, 'late_grace_minutes', 5));
+  const latePenalty = Math.max(0, (att.late_minutes || 0) - grace);
+  const { score: productiveScore, ratio: productive } = calculateProductiveRatio(expectedWork, latePenalty, overbreakMin);
 
   db.prepare(`UPDATE attendance SET clock_out = ?, current_status = ?,
               total_work_minutes = ?, productive_ratio = ?,
