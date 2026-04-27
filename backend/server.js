@@ -1922,19 +1922,44 @@ app.listen(PORT, () => {
 // Hanya update untuk staff yang punya schedule status='work' dengan shift berbeda.
 // OFF/SICK/LEAVE tidak menyentuh current_shift (preserve last work shift).
 function syncStaffShiftsFromDaily(tenantId, dateStr) {
-  const rows = db.prepare(`
-    SELECT s.id AS staff_id, s.current_shift AS old_shift, sd.shift AS new_shift, s.name
+  // Diagnostic: ambil semua staff aktif + status hari ini
+  const all = db.prepare(`
+    SELECT s.id AS staff_id, s.name, s.current_shift, s.tenant_id,
+           sd.shift AS sched_shift, sd.status AS sched_status
     FROM staff s
-    JOIN schedule_daily sd ON sd.staff_id = s.id AND sd.date = ?
+    LEFT JOIN schedule_daily sd ON sd.staff_id = s.id AND sd.date = ?
     WHERE s.tenant_id = ? AND s.is_active = 1
-      AND sd.status = 'work' AND sd.shift IS NOT NULL AND sd.shift != s.current_shift
   `).all(dateStr, tenantId);
-  if (!rows.length) return { updated: 0, changes: [] };
+
   const upd = db.prepare('UPDATE staff SET current_shift = ? WHERE id = ?');
+  const changes = [];
+  const skipped = [];
   db.transaction(() => {
-    for (const r of rows) upd.run(r.new_shift, r.staff_id);
+    for (const r of all) {
+      if (!r.sched_status) {
+        skipped.push({ name: r.name, reason: 'no_schedule_today', current: r.current_shift });
+      } else if (r.sched_status !== 'work') {
+        skipped.push({ name: r.name, reason: r.sched_status, current: r.current_shift });
+      } else if (!r.sched_shift) {
+        skipped.push({ name: r.name, reason: 'work_no_shift', current: r.current_shift });
+      } else if (r.sched_shift === r.current_shift) {
+        // already in sync
+      } else {
+        upd.run(r.sched_shift, r.staff_id);
+        changes.push({ staff_id: r.staff_id, name: r.name, from: r.current_shift, to: r.sched_shift });
+      }
+    }
   })();
-  return { updated: rows.length, changes: rows.map((r) => ({ staff_id: r.staff_id, name: r.name, from: r.old_shift, to: r.new_shift })) };
+  return {
+    date: dateStr,
+    tenant_id: tenantId,
+    total_active_staff: all.length,
+    updated: changes.length,
+    already_synced: all.length - changes.length - skipped.length,
+    skipped_count: skipped.length,
+    changes,
+    skipped,
+  };
 }
 
 // Manual trigger sync (admin testing)

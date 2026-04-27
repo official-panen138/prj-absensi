@@ -59,8 +59,12 @@ export default function StaffPage({ token }) {
       <SectionHeader title="Staff Management" actions={<div className="flex gap-2"><Btn size="sm" variant="ghost" onClick={async () => {
         try {
           const r = await apiFetch(token, '/settings/sync-shifts', { method: 'POST', body: {} });
-          const upd = r.data?.updated || 0;
-          setToast({ type: 'ok', text: upd > 0 ? `✓ ${upd} staff shift di-sync dari jadwal hari ini` : 'Semua shift sudah sesuai jadwal — tidak ada perubahan' });
+          const d = r.data || {};
+          const skipReasons = (d.skipped || []).reduce((acc, s) => { acc[s.reason] = (acc[s.reason] || 0) + 1; return acc; }, {});
+          const reasonStr = Object.entries(skipReasons).map(([k, v]) => `${v} ${k}`).join(', ');
+          const msg = `Date ${d.date} · ${d.total_active_staff} staff aktif · ${d.updated} updated · ${d.already_synced} already synced · ${d.skipped_count} skipped${reasonStr ? ` (${reasonStr})` : ''}`;
+          console.log('[sync-shifts]', d);
+          setToast({ type: d.updated > 0 ? 'ok' : 'error', text: msg });
           fetchStaff();
         } catch (e) { setToast({ type: 'error', text: e.message }); }
       }}>↻ Sync Shifts</Btn><Btn size="sm" onClick={openAdd}>+ Add Staff</Btn></div>} />
