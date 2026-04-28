@@ -262,10 +262,18 @@ export default function MiniApp() {
       <div style={{background:'rgb(31 41 55)',borderRadius:14,padding:16,marginBottom:18,border:'1px solid rgb(55 65 81)'}}>
         <div style={{fontWeight:700,fontSize:15}}>{me?.staff?.name}</div>
         <div style={{fontSize:12,color:'#9ca3af',marginBottom:8}}>
-          {me?.staff?.department} · {me?.staff?.today_shift || me?.staff?.current_shift}
-          {me?.staff?.today_shift && me?.staff?.today_shift !== me?.staff?.current_shift && (
-            <span style={{marginLeft:6,fontSize:10,color:'#fbbf24'}}>(rotasi)</span>
-          )}
+          {me?.staff?.department}
+          {(() => {
+            const ts = me?.staff?.today_status || 'work';
+            if (ts === 'work') {
+              const ds = me?.staff?.today_shift || me?.staff?.current_shift;
+              const isRot = me?.staff?.today_shift && me?.staff?.today_shift !== me?.staff?.current_shift;
+              return <> · {ds}{isRot && <span style={{marginLeft:6,fontSize:10,color:'#fbbf24'}}>(rotasi)</span>}</>;
+            }
+            const labels = { off: '🛌 OFF DAY', sick: '🤒 SICK', leave: '🏖️ CUTI' };
+            const colors = { off: '#9ca3af', sick: '#f87171', leave: '#60a5fa' };
+            return <span style={{marginLeft:4,fontSize:11,fontWeight:700,color:colors[ts]}}> · {labels[ts] || ts.toUpperCase()}</span>;
+          })()}
         </div>
         <div style={{fontSize:13,fontWeight:600,color: onBreak ? '#fbbf24' : isWorking ? '#34d399' : '#6b7280'}}>
           {STATUS_LABEL[status] || '⭘ Not Started'}
@@ -295,6 +303,24 @@ export default function MiniApp() {
       {notStarted && (() => {
         const cw = me?.clock_in_window;
         const yesterdayOpen = cw?.yesterday_open_shift;
+        const todayStatus = me?.staff?.today_status || 'work';
+        // Kalau hari ini OFF/SICK/LEAVE, tampilkan info status, BUKAN block clock-in
+        if (todayStatus !== 'work') {
+          const labels = { off: '🛌 Hari ini Anda OFF', sick: '🤒 Hari ini Anda SAKIT', leave: '🏖️ Hari ini Anda CUTI' };
+          const colors = { off: ['rgba(156,163,175,0.15)', 'rgba(156,163,175,0.4)', '#d1d5db'], sick: ['rgba(248,113,113,0.15)', 'rgba(248,113,113,0.4)', '#fca5a5'], leave: ['rgba(96,165,250,0.15)', 'rgba(96,165,250,0.4)', '#93c5fd'] };
+          const c = colors[todayStatus] || colors.off;
+          return (
+            <div style={{padding:'14px',background:c[0],border:`1px solid ${c[1]}`,borderRadius:12,fontSize:13,marginBottom:14,lineHeight:1.5,textAlign:'center'}}>
+              <div style={{fontWeight:700,color:c[2],marginBottom:4}}>{labels[todayStatus] || todayStatus.toUpperCase()}</div>
+              <div style={{fontSize:12,color:c[2]}}>Tidak perlu clock-in. Selamat beristirahat 🙏</div>
+              {yesterdayOpen && (
+                <div style={{fontSize:11,color:'#fcd34d',marginTop:8,paddingTop:8,borderTop:`1px solid ${c[1]}`}}>
+                  ⏳ Catatan: shift {yesterdayOpen} kemarin masih open di sistem (perlu admin force clock-out).
+                </div>
+              )}
+            </div>
+          );
+        }
         if (yesterdayOpen) {
           return (
             <div style={{padding:'14px',background:'rgba(245,158,11,0.15)',border:'1px solid rgba(245,158,11,0.4)',borderRadius:12,fontSize:13,marginBottom:14,lineHeight:1.5}}>

@@ -1434,8 +1434,12 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
     end: (Array.isArray(mq.end) ? mq.end : []).map((s) => String(s).trim()).filter(Boolean),
   };
 
-  // Today's effective shift: from schedule_daily if exists, else staff default
-  const todayShift = sched?.shift || req.staff.current_shift;
+  // Today's effective shift: HANYA dipakai kalau status work.
+  // Untuk OFF/SICK/LEAVE, shift di schedule_daily cuma placeholder ('morning')
+  // — jangan ditampilkan sebagai shift. Fallback ke current_shift utk display.
+  const isWorkDay = !sched || sched.status === 'work';
+  const todayShift = isWorkDay ? (sched?.shift || req.staff.current_shift) : req.staff.current_shift;
+  const todayStatus = sched?.status || 'work';
 
   const swapModes = getTenantSetting(req.staff.tenant_id, 'swap_modes_enabled', null) || { sick: true, move_off: true, trade: true };
   const leaveCfg = getLeaveConfig(req.staff.tenant_id);
@@ -1468,6 +1472,8 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
       department: req.staff.department,
       current_shift: req.staff.current_shift,
       today_shift: todayShift,
+      today_status: todayStatus,
+      is_work_day: isWorkDay,
     },
     attendance: att || null,
     schedule: sched || null,
