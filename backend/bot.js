@@ -961,6 +961,28 @@ export async function notifyDailyOffSummary(tenantId, dateStr = null) {
   }
 }
 
+// Auto-close stale shifts: aggregate notif per dept group
+export async function notifyAutoCloseSummary(tenantId, closedRows) {
+  if (!Array.isArray(closedRows) || !closedRows.length) return;
+  const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
+  if (muted.includes('auto_close')) return;
+  // Group by department_id supaya tiap dept dapat list staff dept-nya saja
+  const byDept = new Map();
+  for (const r of closedRows) {
+    const k = r.department_id || 'no_dept';
+    if (!byDept.has(k)) byDept.set(k, []);
+    byDept.get(k).push(r);
+  }
+  for (const [deptId, items] of byDept) {
+    const lines = items.map((r) => `• ${r.name} — ${r.date} (${r.shift})`).join('\n');
+    await notifyMonitor(
+      tenantId,
+      `🤖 *AUTO-CLOSE SHIFT BASI* — ${items.length} staff lupa clock-out:\n\n${lines}\n\n_Sistem auto-close di shift_end. Cek attendance kalau perlu adjust._`,
+      deptId === 'no_dept' ? null : deptId,
+    );
+  }
+}
+
 // Admin override: force clock-in / force clock-out — kasih tahu dept group
 export async function notifyAdminOverride(tenantId, staff, action, by, reason, extra = {}) {
   const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];

@@ -209,6 +209,12 @@ function migrateV2_MultiTenant() {
     );
     CREATE INDEX IF NOT EXISTS idx_dept_tenant ON departments(tenant_id);
   `);
+  // attendance: flag untuk shift yang di-auto-close oleh sistem (lupa clock-out)
+  if (!hasColumn('attendance', 'is_auto_closed')) {
+    db.exec('ALTER TABLE attendance ADD COLUMN is_auto_closed INTEGER DEFAULT 0');
+    console.log('[db] added is_auto_closed to attendance');
+  }
+
   // attendance: kolom tambahan untuk cumulative productivity score
   if (!hasColumn('attendance', 'expected_work_minutes')) {
     db.exec('ALTER TABLE attendance ADD COLUMN expected_work_minutes INTEGER DEFAULT 0');

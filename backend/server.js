@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { db, getSetting, setSetting, getDefaultTenantId, getTenantSetting, setTenantSetting } from './db.js';
-import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest, pushSwapResultSnapshot, notifyLeaveRequest, pushLeaveResultSnapshot, notifyDailyOffSummary, notifyAdminOverride } from './bot.js';
+import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest, pushSwapResultSnapshot, notifyLeaveRequest, pushLeaveResultSnapshot, notifyDailyOffSummary, notifyAdminOverride, notifyAutoCloseSummary } from './bot.js';
 import { applySwapApproval, applyLeaveApproval, calculateProductiveRatio } from './approvals.js';
 import { liveBus, emitLiveUpdate } from './events.js';
 
@@ -1337,6 +1337,20 @@ function computeClockInOpenTime(tenantId, departmentId, shiftName, dateStr, offs
   return new Date(shiftStartUtcMs - (offsetMin || 0) * 60000);
 }
 
+// Hitung kapan shift berakhir di UTC, anchored ke tanggal attendance.
+// Cross-midnight: kalau end <= start, end bertambah 1 hari.
+function getShiftEndUtc(tenantId, departmentId, shiftName, dateStr) {
+  const sh = getEffectiveShiftTime(tenantId, departmentId, shiftName);
+  if (!sh.start_time || !sh.end_time) return null;
+  const [sh2, sm2] = String(sh.start_time).split(':').map(Number);
+  const [eh, em] = String(sh.end_time).split(':').map(Number);
+  const wibMidnightUtcMs = new Date(dateStr + 'T00:00:00Z').getTime() - 7 * 3600000;
+  const startMin = sh2 * 60 + sm2;
+  let endMin = eh * 60 + em;
+  if (endMin <= startMin) endMin += 24 * 60;
+  return new Date(wibMidnightUtcMs + endMin * 60000);
+}
+
 // Cari attendance row terbuka (clock_out IS NULL) untuk staff —
 // cek hari ini, kalau tidak ada cek kemarin (untuk shift yang menyeberang midnight).
 function findOpenAttendance(staffId, today) {
@@ -1973,6 +1987,44 @@ app.listen(PORT, () => {
   startDailyBriefingScheduler();
 });
 
+// Auto-close shift terbuka yang sudah lewat shift_end + grace.
+// Set clock_out = shift_end (waktu seharusnya), mark is_auto_closed=1.
+// Notify dept group dengan list staff yang ke-auto-close.
+function autoCloseStaleAttendance(tenantId, graceMinutes = 240) {
+  const now = Date.now();
+  const sc = tenantId
+    ? { clause: ' AND a.tenant_id = ?', params: [tenantId] }
+    : { clause: '', params: [] };
+  // Hanya cek attendance dari kemarin atau lebih lama (today shift mungkin masih jalan)
+  const yesterday = previousDate(todayPP());
+  const open = db.prepare(`
+    SELECT a.id, a.tenant_id, a.staff_id, a.date, a.shift, a.clock_in,
+           s.name, s.department, s.department_id, s.telegram_id
+    FROM attendance a
+    JOIN staff s ON s.id = a.staff_id
+    WHERE a.clock_out IS NULL AND a.date <= ?${sc.clause}
+  `).all(yesterday, ...sc.params);
+
+  const closed = []; // { tenantId, staff_id, name, department_id, ... }
+  for (const a of open) {
+    const shiftEnd = getShiftEndUtc(a.tenant_id, a.department_id || null, a.shift, a.date);
+    const fallbackEnd = new Date(a.date + 'T22:00:00Z').getTime() + 12 * 3600000; // safety
+    const endMs = shiftEnd ? shiftEnd.getTime() : fallbackEnd;
+    if (now < endMs + graceMinutes * 60000) continue; // belum lewat grace
+    const closeAt = new Date(endMs).toISOString();
+    const totalMin = Math.round((endMs - new Date(a.clock_in).getTime()) / 60000);
+    db.prepare(`UPDATE attendance SET clock_out = ?, current_status = 'offline', is_auto_closed = 1,
+                total_work_minutes = COALESCE(total_work_minutes, 0) + ?
+                WHERE id = ?`)
+      .run(closeAt, Math.max(0, totalMin), a.id);
+    // Tutup juga break_log yang masih open untuk staff ini
+    db.prepare("UPDATE break_log SET end_time = ?, duration_minutes = CAST((julianday(?) - julianday(start_time)) * 1440 AS INTEGER) WHERE staff_id = ? AND end_time IS NULL")
+      .run(closeAt, closeAt, a.staff_id);
+    closed.push(a);
+  }
+  return closed;
+}
+
 // Sync staff.current_shift dari schedule_daily hari ini.
 // Hanya update untuk staff yang punya schedule status='work' dengan shift berbeda.
 // OFF/SICK/LEAVE tidak menyentuh current_shift (preserve last work shift).
@@ -2053,39 +2105,81 @@ app.post('/api/settings/sync-shifts', auth, (req, res) => {
   ok(res, result);
 });
 
+// Manual trigger auto-close stale shifts (admin)
+app.post('/api/activity/auto-close-stale', auth, (req, res) => {
+  if (req.user?.role !== 'admin' && req.user?.role !== 'super_admin') return fail(res, 403, 'Admin only');
+  const tid = writeTenantId(req);
+  if (!tid) return fail(res, 400, 'No tenant context');
+  const grace = +(req.query.grace_minutes ?? 240);
+  const closed = autoCloseStaleAttendance(tid, grace);
+  emitLiveUpdate(tid, 'auto_close_stale', { count: closed.length });
+  // Notif aggregated kalau ada
+  if (closed.length > 0) {
+    notifyAutoCloseSummary(tid, closed).catch(() => {});
+  }
+  ok(res, {
+    closed_count: closed.length,
+    closed: closed.map((c) => ({ staff_id: c.staff_id, name: c.name, date: c.date, shift: c.shift })),
+  });
+});
+
 // Daily briefing scheduler — fires at HH:00 PP per tenant once per date.
 // Juga sync staff.current_shift dari jadwal hari ini sebelum kirim briefing.
 function startDailyBriefingScheduler() {
-  // Jalankan sync sekali saat startup (catch-up kalau server restart mid-day)
+  // Jalankan sync + auto-close sekali saat startup
   try {
     const today = todayPP();
     const tenants = db.prepare('SELECT id FROM tenants').all();
     for (const t of tenants) {
       const r = syncStaffShiftsFromDaily(t.id, today);
       if (r.updated > 0) console.log(`[startup] synced ${r.updated} staff shifts for tenant=${t.id}`);
+      try {
+        const closed = autoCloseStaleAttendance(t.id);
+        if (closed.length > 0) {
+          console.log(`[startup] auto-closed ${closed.length} stale shifts for tenant=${t.id}`);
+          notifyAutoCloseSummary(t.id, closed).catch(() => {});
+        }
+      } catch (e) { console.warn('[startup] auto-close failed:', e.message); }
     }
   } catch (e) { console.warn('[startup] shift sync failed:', e.message); }
 
+  let lastAutoCloseHour = -1;
   setInterval(async () => {
     try {
       const ppNow = new Date(Date.now() + 7 * 3600000);
+      const ppHour = ppNow.getUTCHours();
       const today = todayPP();
       const tenants = db.prepare('SELECT id FROM tenants').all();
+
+      // Auto-close stale shifts: jalankan setiap pergantian jam (1x per jam, hemat resource)
+      if (ppHour !== lastAutoCloseHour) {
+        lastAutoCloseHour = ppHour;
+        for (const t of tenants) {
+          try {
+            const closed = autoCloseStaleAttendance(t.id);
+            if (closed.length > 0) {
+              console.log(`[scheduler] auto-closed ${closed.length} stale shifts for tenant=${t.id}`);
+              await notifyAutoCloseSummary(t.id, closed);
+            }
+          } catch (e) { console.warn('[scheduler] auto-close tenant', t.id, e.message); }
+        }
+      }
+
+      // Daily briefing: jalankan di jam yang ditentukan, sekali per tanggal
       for (const t of tenants) {
         const cfg = getTenantSetting(t.id, 'daily_briefing', null) || {};
         if (cfg.enabled === false) continue;
         const hour = Number.isInteger(+cfg.hour) ? +cfg.hour : 6;
-        if (ppNow.getUTCHours() !== hour) continue;
+        if (ppHour !== hour) continue;
         const lastSent = getTenantSetting(t.id, 'daily_briefing_last_sent', null);
         if (lastSent === today) continue;
-        // Sync shift dulu, baru kirim briefing
         const sync = syncStaffShiftsFromDaily(t.id, today);
         if (sync.updated > 0) console.log(`[scheduler] synced ${sync.updated} staff shifts for tenant=${t.id}`);
         await notifyDailyOffSummary(t.id, today);
         setTenantSetting(t.id, 'daily_briefing_last_sent', today);
         console.log(`[scheduler] daily briefing sent tenant=${t.id} date=${today}`);
       }
-    } catch (e) { console.warn('[scheduler] daily briefing tick:', e.message); }
+    } catch (e) { console.warn('[scheduler] tick:', e.message); }
   }, 60_000);
-  console.log('[scheduler] daily briefing + shift sync started (checks every 60s)');
+  console.log('[scheduler] daily briefing + shift sync + hourly auto-close started');
 }
