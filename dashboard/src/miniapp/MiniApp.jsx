@@ -303,6 +303,15 @@ export default function MiniApp() {
             </div>
           );
         }
+        if (cw?.is_expired) {
+          const cutoffWib = cw.cutoff_at ? new Date(new Date(cw.cutoff_at).getTime() + 7 * 3600000).toISOString().slice(11, 16) : null;
+          return (
+            <div style={{padding:'14px',background:'rgba(239,68,68,0.15)',border:'1px solid rgba(239,68,68,0.4)',borderRadius:12,fontSize:13,marginBottom:14,lineHeight:1.5,textAlign:'center'}}>
+              <div style={{fontWeight:700,color:'#fca5a5',marginBottom:4}}>🚫 Shift {me?.staff?.today_shift} sudah lewat</div>
+              <div style={{fontSize:12,color:'#fca5a5'}}>{cutoffWib ? `Cutoff: ${cutoffWib} WIB. ` : ''}Hubungi admin untuk attendance manual.</div>
+            </div>
+          );
+        }
         const notOpenYet = cw && cw.is_open_now === false && cw.opens_at;
         if (notOpenYet) {
           const opensWib = new Date(new Date(cw.opens_at).getTime() + 7 * 3600000).toISOString().slice(11, 16);

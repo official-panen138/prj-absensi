@@ -1164,6 +1164,7 @@ const KV_ROUTES = {
   }],
   '/api/settings/qr-group': (body) => ['qr_monitor_group_chat_id', String(body.chat_id || '').trim() || null],
   '/api/settings/clock-in-window': (body) => ['clock_in_open_offset_minutes', Number.isFinite(+body.offset_minutes) && +body.offset_minutes >= 0 ? +body.offset_minutes : 60],
+  '/api/settings/clock-in-cutoff': (body) => ['clock_in_late_cutoff_minutes', Number.isFinite(+body.minutes) && +body.minutes >= 0 ? +body.minutes : 240],
   '/api/settings/daily-briefing': (body) => ['daily_briefing', {
     enabled: body.enabled !== false,
     hour: Number.isInteger(+body.hour) && +body.hour >= 0 && +body.hour <= 23 ? +body.hour : 6,
@@ -1412,12 +1413,20 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
 
   // Clock-in window info untuk Mini App
   const offsetMin = +(getTenantSetting(req.staff.tenant_id, 'clock_in_open_offset_minutes', 60));
+  const lateCutoffMin = +(getTenantSetting(req.staff.tenant_id, 'clock_in_late_cutoff_minutes', 240));
   const openAt = computeClockInOpenTime(req.staff.tenant_id, req.staff.department_id, todayShift, today, offsetMin);
+  const cutoffAt = computeClockInOpenTime(req.staff.tenant_id, req.staff.department_id, todayShift, today, -lateCutoffMin);
   const yesterdayOpen = db.prepare('SELECT shift FROM attendance WHERE staff_id = ? AND date = ? AND clock_out IS NULL').get(req.staff.id, previousDate(today));
+  const nowMs = Date.now();
+  const isExpired = cutoffAt ? nowMs > cutoffAt.getTime() : false;
+  const isOpenNow = openAt ? (nowMs >= openAt.getTime() && !isExpired) : true;
   const clockInWindow = {
     opens_at: openAt ? openAt.toISOString() : null,
-    is_open_now: openAt ? Date.now() >= openAt.getTime() : true,
+    cutoff_at: cutoffAt ? cutoffAt.toISOString() : null,
+    is_open_now: isOpenNow,
+    is_expired: isExpired,
     offset_minutes: offsetMin,
+    late_cutoff_minutes: lateCutoffMin,
     yesterday_open_shift: yesterdayOpen?.shift || null,
   };
 
@@ -1619,13 +1628,21 @@ app.post('/api/bot/clock-in-request-qr', tgAuth, async (req, res) => {
   if (sched && ['off', 'sick', 'leave'].includes(sched.status)) {
     return fail(res, 400, `Jadwal hari ini: ${sched.status.toUpperCase()}. Tidak bisa clock-in.`);
   }
-  // Validasi unlock window: tidak bisa start sebelum (shift_start - offset)
+  // Validasi window: tidak bisa start kepagian (sebelum shift_start - early_offset)
+  // dan tidak bisa start kemalaman (lewat shift_start + late_cutoff)
   const offsetMin = +(getTenantSetting(req.staff.tenant_id, 'clock_in_open_offset_minutes', 60));
+  const lateCutoffMin = +(getTenantSetting(req.staff.tenant_id, 'clock_in_late_cutoff_minutes', 240));
   const todayShift = sched?.shift || req.staff.current_shift;
   const openAt = computeClockInOpenTime(req.staff.tenant_id, req.staff.department_id, todayShift, today, offsetMin);
   if (openAt && Date.now() < openAt.getTime()) {
     const wibOpen = new Date(openAt.getTime() + 7 * 3600000).toISOString().slice(11, 16);
     return fail(res, 400, `Tombol Mulai akan aktif jam ${wibOpen} WIB (shift ${todayShift}).`);
+  }
+  // Cek upper bound: shift_start + late_cutoff
+  const cutoffAt = computeClockInOpenTime(req.staff.tenant_id, req.staff.department_id, todayShift, today, -lateCutoffMin);
+  if (cutoffAt && Date.now() > cutoffAt.getTime()) {
+    const wibCutoff = new Date(cutoffAt.getTime() + 7 * 3600000).toISOString().slice(11, 16);
+    return fail(res, 400, `Shift ${todayShift} sudah lewat ${Math.floor(lateCutoffMin / 60)}j ${lateCutoffMin % 60}m (cutoff ${wibCutoff} WIB). Hubungi admin untuk attendance manual.`);
   }
   const session = await createClockQrSession(req.staff.tenant_id, req.staff, 'clock_in');
   pushClockQRToMonitor(req.staff.tenant_id, { ...session, action: 'clock_in' }, req.staff).catch((e) => console.warn('[bot] push QR failed:', e.message));
