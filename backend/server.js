@@ -1842,8 +1842,9 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
   const { type } = req.body || {};
   if (!['smoke', 'toilet', 'outside'].includes(type)) return fail(res, 400, 'Invalid break type');
   const today = todayPP();
-  const att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
-  if (!att) return fail(res, 400, 'Belum clock-in.');
+  // Cross-midnight: cek shift hari ini DULU, fallback ke shift kemarin yg masih open
+  const att = findOpenAttendance(req.staff.id, today);
+  if (!att) return fail(res, 400, 'Belum clock-in atau sudah clock-out.');
   if (att.current_status !== 'working') return fail(res, 400, 'Sedang break, end dulu.');
   const dailyQuota = getEffectiveBreakLimit(req.staff.tenant_id, req.staff.department_id, type);
 
@@ -1877,8 +1878,8 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
 
 app.post('/api/bot/break-request-qr', tgAuth, async (req, res) => {
   const today = todayPP();
-  const att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
-  if (!att) return fail(res, 400, 'Belum clock-in.');
+  const att = findOpenAttendance(req.staff.id, today);
+  if (!att) return fail(res, 400, 'Belum clock-in atau sudah clock-out.');
   const bl = db.prepare('SELECT * FROM break_log WHERE staff_id = ? AND end_time IS NULL ORDER BY id DESC LIMIT 1').get(req.staff.id);
   if (!bl) return fail(res, 400, 'Tidak ada break aktif.');
   // Generate QR token baru (regenerate setiap request supaya QR lama invalid)
@@ -1908,10 +1909,11 @@ app.post('/api/bot/break-end-qr', tgAuth, (req, res) => {
   const dur = Math.round((now - new Date(bl.start_time)) / 60000);
   const overtime = dur > (bl.limit_minutes || 9999) ? 1 : 0;
   db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = ?, is_overtime = ?, ip_address_end = ? WHERE id = ?').run(now.toISOString(), dur, overtime, clientIp.slice(0, 45), bl.id);
+  // Update attendance via FK attendance_id, bukan date — supaya cross-midnight ikut benar
   db.prepare(`UPDATE attendance SET current_status = ?, break_start = NULL, break_type = NULL, break_limit = NULL,
               total_break_minutes = COALESCE(total_break_minutes,0) + ?, break_violations = COALESCE(break_violations,0) + ?
-              WHERE staff_id = ? AND date = ?`)
-    .run('working', dur, overtime, req.staff.id, todayPP());
+              WHERE id = ?`)
+    .run('working', dur, overtime, bl.attendance_id);
   if (overtime) {
     notifyOvertime(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, bl.type, dur, bl.limit_minutes).catch((e) => console.warn('[bot] notifyOvertime:', e.message));
   }
@@ -1925,7 +1927,6 @@ app.post('/api/bot/break-end', tgAuth, (req, res) => {
     notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, 'break_end', clientIp).catch(() => {});
     return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Kembali ke kantor dan gunakan IP kantor untuk Back to Work.`);
   }
-  const today = todayPP();
   const bl = db.prepare('SELECT * FROM break_log WHERE staff_id = ? AND end_time IS NULL ORDER BY id DESC LIMIT 1').get(req.staff.id);
   if (!bl) return fail(res, 400, 'Tidak ada break aktif.');
   const qrRequired = !!getTenantSetting(req.staff.tenant_id, 'qr_required', false);
@@ -1936,8 +1937,8 @@ app.post('/api/bot/break-end', tgAuth, (req, res) => {
   db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = ?, is_overtime = ?, ip_address_end = ? WHERE id = ?').run(now.toISOString(), dur, overtime, clientIp.slice(0, 45), bl.id);
   db.prepare(`UPDATE attendance SET current_status = ?, break_start = NULL, break_type = NULL, break_limit = NULL,
               total_break_minutes = COALESCE(total_break_minutes,0) + ?, break_violations = COALESCE(break_violations,0) + ?
-              WHERE staff_id = ? AND date = ?`)
-    .run('working', dur, overtime, req.staff.id, today);
+              WHERE id = ?`)
+    .run('working', dur, overtime, bl.attendance_id);
   emitLiveUpdate(req.staff.tenant_id, 'break_end_manual', { staff_id: req.staff.id });
   ok(res, { duration_minutes: dur, is_overtime: !!overtime });
 });
