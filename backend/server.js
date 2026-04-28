@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { db, getSetting, setSetting, getDefaultTenantId, getTenantSetting, setTenantSetting } from './db.js';
-import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest, pushSwapResultSnapshot, notifyLeaveRequest, pushLeaveResultSnapshot, notifyDailyOffSummary } from './bot.js';
+import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest, pushSwapResultSnapshot, notifyLeaveRequest, pushLeaveResultSnapshot, notifyDailyOffSummary, notifyAdminOverride } from './bot.js';
 import { applySwapApproval, applyLeaveApproval, calculateProductiveRatio } from './approvals.js';
 import { liveBus, emitLiveUpdate } from './events.js';
 
@@ -434,7 +434,7 @@ app.get('/api/activity/active-breaks-qr', auth, (req, res) => {
 });
 
 app.post('/api/activity/force-clockout', auth, (req, res) => {
-  const { staff_id } = req.body || {};
+  const { staff_id, reason } = req.body || {};
   if (!staff_id) return fail(res, 400, 'staff_id required');
   const s = findStaffScoped(req, staff_id);
   if (!s) return fail(res, 404, 'Staff not in your tenant');
@@ -444,7 +444,37 @@ app.post('/api/activity/force-clockout', auth, (req, res) => {
   db.prepare('UPDATE attendance SET clock_out = ?, current_status = ? WHERE id = ?').run(new Date().toISOString(), 'offline', att.id);
   db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = CAST((julianday(?) - julianday(start_time)) * 1440 AS INTEGER) WHERE staff_id = ? AND end_time IS NULL').run(new Date().toISOString(), new Date().toISOString(), staff_id);
   emitLiveUpdate(s.tenant_id, 'force_clockout', { staff_id });
+  notifyAdminOverride(s.tenant_id, { name: s.name, department: s.department, department_id: s.department_id }, 'force_clock_out', req.user?.username || 'admin', reason).catch(() => {});
   ok(res, { id: att.id });
+});
+
+// Admin paksa clock-in untuk staff yang lewat cutoff atau bukan jam shiftnya
+app.post('/api/activity/force-clockin', auth, (req, res) => {
+  const { staff_id, reason } = req.body || {};
+  if (!staff_id) return fail(res, 400, 'staff_id required');
+  if (req.user?.role !== 'admin' && req.user?.role !== 'super_admin') return fail(res, 403, 'Admin only');
+  const s = findStaffScoped(req, staff_id);
+  if (!s) return fail(res, 404, 'Staff not in your tenant');
+  const today = todayPP();
+  const existing = db.prepare('SELECT id FROM attendance WHERE staff_id = ? AND date = ?').get(staff_id, today);
+  if (existing) return fail(res, 400, 'Sudah ada attendance hari ini');
+  const sched = db.prepare('SELECT shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(staff_id, today);
+  const effectiveShift = sched?.shift || s.current_shift || 'morning';
+  const now = new Date();
+  // Compute lateness against shift_start
+  const shiftRow = getEffectiveShiftTime(s.tenant_id, s.department_id, effectiveShift);
+  let actualLate = 0;
+  if (shiftRow?.start_time) {
+    const [h, m] = shiftRow.start_time.split(':').map(Number);
+    const shiftStart = new Date(now); shiftStart.setHours(h, m, 0, 0);
+    const diff = Math.round((now - shiftStart) / 60000);
+    if (diff > 0) actualLate = diff;
+  }
+  db.prepare('INSERT INTO attendance(tenant_id,staff_id,date,shift,clock_in,late_minutes,ip_address,current_status) VALUES(?,?,?,?,?,?,?,?)')
+    .run(s.tenant_id, staff_id, today, effectiveShift, now.toISOString(), actualLate, 'admin-override', 'working');
+  emitLiveUpdate(s.tenant_id, 'force_clock_in', { staff_id });
+  notifyAdminOverride(s.tenant_id, { name: s.name, department: s.department, department_id: s.department_id }, 'force_clock_in', req.user?.username || 'admin', reason, { late_minutes: actualLate, shift: effectiveShift }).catch(() => {});
+  ok(res, { staff_id, clock_in: now.toISOString(), late_minutes: actualLate, shift: effectiveShift });
 });
 
 app.get('/api/activity/log/:date', auth, (req, res) => {

@@ -60,11 +60,29 @@ export default function LiveBoardPage({ token }) {
   }, [token, fetchLive]);
 
   const forceClockOut = async (staff) => {
-    if (!window.confirm('Force END ' + staff.name + '?')) return;
+    const reason = window.prompt(`Force END ${staff.name} — alasan?`, 'Admin force END');
+    if (reason === null) return;
     setForceLoading(staff.id);
     try {
-      await apiFetch(token, '/activity/force-clockout', { method: 'POST', body: { staff_id: staff.id, reason: 'Admin force END' } });
+      await apiFetch(token, '/activity/force-clockout', { method: 'POST', body: { staff_id: staff.id, reason: reason || 'Admin force END' } });
       setToast({ type: 'ok', text: `${staff.name} session ended.` });
+      fetchLive();
+    } catch (e) {
+      setToast({ type: 'error', text: e.message });
+    } finally {
+      setForceLoading(null);
+    }
+  };
+
+  const forceClockIn = async (staff) => {
+    const reason = window.prompt(`Allow ${staff.name} clock-in di luar jam shift?\n\nKetik alasan (akan dikirim ke grup kepala dept):`, '');
+    if (reason === null) return;
+    if (!reason.trim()) { setToast({ type: 'error', text: 'Alasan wajib diisi' }); return; }
+    setForceLoading(staff.id);
+    try {
+      const r = await apiFetch(token, '/activity/force-clockin', { method: 'POST', body: { staff_id: staff.id, reason: reason.trim() } });
+      const lateMsg = r.data?.late_minutes > 0 ? ` (telat ${r.data.late_minutes}m)` : '';
+      setToast({ type: 'ok', text: `${staff.name} clocked-in by admin${lateMsg}` });
       fetchLive();
     } catch (e) {
       setToast({ type: 'error', text: e.message });
@@ -270,6 +288,16 @@ export default function LiveBoardPage({ token }) {
                               className={`mt-2.5 w-full py-1 rounded-md bg-transparent border border-red-500/30 text-red-400 text-[11px] cursor-pointer transition-all duration-150 hover:bg-red-500/10 ${forceLoading === staff.id ? 'opacity-50 cursor-not-allowed' : ''}`}
                             >
                               {forceLoading === staff.id ? '⏳ Processing...' : 'Force END'}
+                            </button>
+                          )}
+                          {!isOnline && !staff.clock_in && (!staff.schedule_status || staff.schedule_status === 'work') && (
+                            <button
+                              onClick={() => forceClockIn(staff)}
+                              disabled={forceLoading === staff.id}
+                              className={`mt-2.5 w-full py-1 rounded-md bg-transparent border border-emerald-500/30 text-emerald-400 text-[11px] cursor-pointer transition-all duration-150 hover:bg-emerald-500/10 ${forceLoading === staff.id ? 'opacity-50 cursor-not-allowed' : ''}`}
+                              title="Allow staff clock-in di luar jam shift (admin only)"
+                            >
+                              {forceLoading === staff.id ? '⏳ Processing...' : '🔓 Allow Clock-In'}
                             </button>
                           )}
                         </Card>

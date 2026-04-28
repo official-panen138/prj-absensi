@@ -961,6 +961,28 @@ export async function notifyDailyOffSummary(tenantId, dateStr = null) {
   }
 }
 
+// Admin override: force clock-in / force clock-out — kasih tahu dept group
+export async function notifyAdminOverride(tenantId, staff, action, by, reason, extra = {}) {
+  const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
+  if (muted.includes('admin_override')) return;
+  const dept = staff.department ? ` · ${staff.department}` : '';
+  const labels = {
+    force_clock_in: '🔓 *ADMIN OVERRIDE — Force Clock-In*',
+    force_clock_out: '🔓 *ADMIN OVERRIDE — Force Clock-Out*',
+  };
+  const label = labels[action] || `🔓 *ADMIN OVERRIDE — ${action}*`;
+  const reasonLine = reason ? `\n💬 ${reason}` : '';
+  const extras = [];
+  if (extra.late_minutes != null) extras.push(`⏱ Telat: ${extra.late_minutes} menit`);
+  if (extra.shift) extras.push(`Shift: _${extra.shift}_`);
+  const extraLine = extras.length ? `\n${extras.join(' · ')}` : '';
+  await notifyMonitor(
+    tenantId,
+    `${label}\n👤 ${staff.name}${dept}\n👮 oleh: ${by}${extraLine}${reasonLine}`,
+    staff.department_id,
+  );
+}
+
 export async function notifyOvertime(tenantId, staff, breakType, durationMin, limitMin) {
   const muted = (getTenantSetting(tenantId, 'notification_prefs', {}) || {}).muted_types || [];
   if (muted.includes('break_overtime')) return;
