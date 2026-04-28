@@ -1408,7 +1408,12 @@ app.post('/api/bot/auth/telegram', (req, res) => {
 
 app.get('/api/bot/me', tgAuth, (req, res) => {
   const today = todayPP();
-  const att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
+  let att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
+  // Cross-midnight: kalau hari ini belum punya attendance, cek shift kemarin yg masih open.
+  // Staff yang start Night kemarin 22:00 harus tetap kelihatan "Working" sampai End.
+  if (!att) {
+    att = db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ? AND clock_out IS NULL').get(req.staff.id, previousDate(today));
+  }
   const sched = db.prepare('SELECT status, shift FROM schedule_daily WHERE staff_id = ? AND date = ?').get(req.staff.id, today);
 
   // Break quota usage hari ini per type (include break aktif sebagai elapsed)
