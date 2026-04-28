@@ -439,8 +439,10 @@ app.post('/api/activity/force-clockout', auth, (req, res) => {
   const s = findStaffScoped(req, staff_id);
   if (!s) return fail(res, 404, 'Staff not in your tenant');
   const today = todayPP();
-  const att = db.prepare('SELECT id FROM attendance WHERE staff_id = ? AND date = ?').get(staff_id, today);
-  if (!att) return fail(res, 404, 'Attendance not found for today');
+  // Cross-midnight: cek hari ini dulu, fallback ke shift kemarin yg masih open
+  const att = findOpenAttendance(staff_id, today) || db.prepare('SELECT * FROM attendance WHERE staff_id = ? AND date = ?').get(staff_id, today);
+  if (!att) return fail(res, 404, 'Tidak ada attendance terbuka untuk staff ini');
+  if (att.clock_out) return fail(res, 400, 'Sudah clock-out');
   db.prepare('UPDATE attendance SET clock_out = ?, current_status = ? WHERE id = ?').run(new Date().toISOString(), 'offline', att.id);
   db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = CAST((julianday(?) - julianday(start_time)) * 1440 AS INTEGER) WHERE staff_id = ? AND end_time IS NULL').run(new Date().toISOString(), new Date().toISOString(), staff_id);
   emitLiveUpdate(s.tenant_id, 'force_clockout', { staff_id });
