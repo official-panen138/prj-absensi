@@ -961,6 +961,23 @@ export async function notifyDailyOffSummary(tenantId, dateStr = null) {
   }
 }
 
+// Auto-end break: kirim DM langsung ke staff yang break-nya di-auto-end
+export async function notifyBreakAutoEnded(tenantId, staffTelegramId, staffName, type, durationMin, limitMin) {
+  if (!staffTelegramId) return;
+  const entry = runningBots.get(tenantId);
+  if (!entry) return;
+  const labels = { smoke: '🚬 Smoke', toilet: '🚻 Toilet', outside: '🏪 Go Out' };
+  const label = labels[type] || type;
+  const overMin = Math.max(0, durationMin - limitMin);
+  try {
+    await entry.bot.api.sendMessage(
+      staffTelegramId,
+      `⚠ *Break Anda diakhiri otomatis*\n\n${label} sudah lewat limit (${durationMin}m / ${limitMin}m, +${overMin} menit).\nStatus Anda kembali ke *Working*. Silakan kembali ke pekerjaan.`,
+      { parse_mode: 'Markdown' },
+    );
+  } catch (e) { console.warn('[bot] notifyBreakAutoEnded:', e.message); }
+}
+
 // Auto-close stale shifts: aggregate notif per dept group
 export async function notifyAutoCloseSummary(tenantId, closedRows) {
   if (!Array.isArray(closedRows) || !closedRows.length) return;

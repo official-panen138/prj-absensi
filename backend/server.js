@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { db, getSetting, setSetting, getDefaultTenantId, getTenantSetting, setTenantSetting } from './db.js';
-import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest, pushSwapResultSnapshot, notifyLeaveRequest, pushLeaveResultSnapshot, notifyDailyOffSummary, notifyAdminOverride, notifyAutoCloseSummary } from './bot.js';
+import { startBot, reloadBot, getBotStatus, verifyInitData, notifyApproved, notifyLate, notifyOvertime, notifyIpViolation, pushBreakQRToMonitor, pushClockQRToMonitor, notifySwapRequest, pushSwapResultSnapshot, notifyLeaveRequest, pushLeaveResultSnapshot, notifyDailyOffSummary, notifyAdminOverride, notifyAutoCloseSummary, notifyBreakAutoEnded } from './bot.js';
 import { applySwapApproval, applyLeaveApproval, calculateProductiveRatio } from './approvals.js';
 import { liveBus, emitLiveUpdate } from './events.js';
 
@@ -1999,6 +1999,41 @@ app.listen(PORT, () => {
   startDailyBriefingScheduler();
 });
 
+// Auto-end break yang sudah lewat limit + grace (default 2 menit).
+// Tutup break_log, balikkan attendance.current_status='working', kasih notif.
+function autoEndOverbreaks(tenantId, graceMinutes = 2) {
+  const sc = tenantId
+    ? { clause: ' AND s.tenant_id = ?', params: [tenantId] }
+    : { clause: '', params: [] };
+  const active = db.prepare(`
+    SELECT bl.id, bl.attendance_id, bl.staff_id, bl.type, bl.start_time, bl.limit_minutes,
+           s.tenant_id, s.name, s.department, s.department_id, s.telegram_id,
+           CAST((julianday('now') - julianday(bl.start_time)) * 1440 AS INTEGER) AS elapsed_min
+    FROM break_log bl
+    JOIN staff s ON s.id = bl.staff_id
+    WHERE bl.end_time IS NULL AND bl.limit_minutes IS NOT NULL${sc.clause}
+  `).all(...sc.params);
+
+  const ended = [];
+  for (const bl of active) {
+    const overByMin = bl.elapsed_min - bl.limit_minutes;
+    if (overByMin <= graceMinutes) continue; // belum lewat grace
+    const now = new Date().toISOString();
+    db.prepare('UPDATE break_log SET end_time = ?, duration_minutes = ?, is_overtime = 1, ip_address_end = ? WHERE id = ?')
+      .run(now, bl.elapsed_min, 'auto-overbreak', bl.id);
+    db.prepare(`UPDATE attendance SET current_status = 'working', break_start = NULL, break_type = NULL, break_limit = NULL,
+                total_break_minutes = COALESCE(total_break_minutes,0) + ?, break_violations = COALESCE(break_violations,0) + 1
+                WHERE id = ?`)
+      .run(bl.elapsed_min, bl.attendance_id);
+    ended.push({ ...bl, duration: bl.elapsed_min, over: overByMin });
+    emitLiveUpdate(bl.tenant_id, 'break_auto_end', { staff_id: bl.staff_id });
+    // Notif kepala dept (overtime) + staff DM
+    notifyOvertime(bl.tenant_id, { name: bl.name, department: bl.department, department_id: bl.department_id }, bl.type, bl.elapsed_min, bl.limit_minutes).catch(() => {});
+    notifyBreakAutoEnded(bl.tenant_id, bl.telegram_id, bl.name, bl.type, bl.elapsed_min, bl.limit_minutes).catch(() => {});
+  }
+  return ended;
+}
+
 // Auto-close shift terbuka yang sudah lewat shift_end + grace.
 // Set clock_out = shift_end (waktu seharusnya), mark is_auto_closed=1.
 // Notify dept group dengan list staff yang ke-auto-close.
@@ -2175,6 +2210,14 @@ function startDailyBriefingScheduler() {
             }
           } catch (e) { console.warn('[scheduler] auto-close tenant', t.id, e.message); }
         }
+      }
+
+      // Auto-end overbreak: jalankan tiap menit (cepat, supaya enforcement responsif)
+      for (const t of tenants) {
+        try {
+          const ended = autoEndOverbreaks(t.id);
+          if (ended.length > 0) console.log(`[scheduler] auto-ended ${ended.length} overbreaks for tenant=${t.id}`);
+        } catch (e) { console.warn('[scheduler] overbreak auto-end:', e.message); }
       }
 
       // Daily briefing: jalankan di jam yang ditentukan, sekali per tanggal
