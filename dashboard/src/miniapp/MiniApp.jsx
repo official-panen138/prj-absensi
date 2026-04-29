@@ -361,13 +361,18 @@ export default function MiniApp() {
 
       {isWorking && (() => {
         const q = me?.break_quotas || {};
+        const tb = me?.total_break_budget || { total_quota: 0, total_used: 0, total_remaining: 0 };
         const ipBlocked = me?.ip_allowed === false;
+        const totalExhausted = tb.total_remaining <= 0;
+        const usedPct = tb.total_quota > 0 ? Math.min(100, Math.round((tb.total_used / tb.total_quota) * 100)) : 0;
+        const barColor = tb.total_remaining === 0 ? '#dc2626' : tb.total_remaining <= 5 ? '#d97706' : '#10b981';
         const mkBtn = (type, label) => {
           const quota = q[type];
-          const exhausted = quota && quota.remaining <= 0;
+          const perTypeOver = quota && quota.used > quota.limit;
+          const exhausted = totalExhausted || (quota && quota.remaining <= 0);
           const disabled = exhausted || ipBlocked;
           const suffix = quota ? ` · ${quota.used}m/${quota.limit}m` : '';
-          const badge = ipBlocked ? ' · Butuh IP Kantor' : exhausted ? ' · HABIS' : '';
+          const badge = ipBlocked ? ' · Butuh IP Kantor' : totalExhausted ? ' · TOTAL HABIS' : (quota && quota.remaining <= 0) ? ' · HABIS' : perTypeOver ? ' · OVER' : '';
           return (
             <Btn color="amber" onClick={() => act('/break-start', { type })} disabled={disabled}>
               {label}{suffix}{badge}
@@ -376,6 +381,20 @@ export default function MiniApp() {
         };
         return (
           <>
+            <div style={{marginTop:8,padding:12,background:'rgb(31 41 55)',borderRadius:10,border:'1px solid rgb(55 65 81)'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:6}}>
+                <span style={{fontSize:10,color:'#9ca3af',letterSpacing:1}}>TOTAL BREAK BUDGET</span>
+                <span style={{fontSize:14,fontWeight:800,color:barColor}}>
+                  {tb.total_remaining}<span style={{fontSize:10,color:'#9ca3af',fontWeight:500}}> / {tb.total_quota}m</span>
+                </span>
+              </div>
+              <div style={{height:5,background:'rgb(17 24 39)',borderRadius:3,overflow:'hidden'}}>
+                <div style={{height:'100%',width:`${usedPct}%`,background:barColor,transition:'width 0.3s'}} />
+              </div>
+              <div style={{fontSize:9,color:'#6b7280',marginTop:4}}>
+                Terpakai {tb.total_used}m · overbreak satu type kurangi sisa type lain
+              </div>
+            </div>
             <div style={{fontSize:11,color:'#6b7280',marginBottom:6,marginTop:8}}>BREAK</div>
             {mkBtn('smoke', '🚬 Smoke Break')}
             {mkBtn('toilet', '🚻 Toilet')}

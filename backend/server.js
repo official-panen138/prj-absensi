@@ -1437,14 +1437,25 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
   `).all(req.staff.id, today);
   const usedMap = {};
   used.forEach((r) => { usedMap[r.type] = r.used || 0; });
+  // SHARED CUMULATIVE QUOTA: total = sum semua per-type. Overbreak satu type
+  // kurangi remaining type lain via budget bersama.
+  const totalQuota = quotas.reduce((a, q) => a + (q.daily_quota_minutes || 0), 0);
+  const totalUsed = Object.values(usedMap).reduce((a, v) => a + v, 0);
+  const totalRemaining = Math.max(0, totalQuota - totalUsed);
   const breakQuotas = {};
   quotas.forEach((q) => {
+    const u = usedMap[q.type] || 0;
+    const perTypeRem = Math.max(0, q.daily_quota_minutes - u);
+    // Effective remaining = min(per-type remaining, total budget remaining)
+    const effectiveRem = Math.min(perTypeRem, totalRemaining);
     breakQuotas[q.type] = {
       limit: q.daily_quota_minutes,
-      used: usedMap[q.type] || 0,
-      remaining: Math.max(0, q.daily_quota_minutes - (usedMap[q.type] || 0)),
+      used: u,
+      remaining: effectiveRem,
+      per_type_remaining: perTypeRem,
     };
   });
+  const totalBudget = { total_quota: totalQuota, total_used: totalUsed, total_remaining: totalRemaining };
 
   const clientIp = getClientIp(req);
   const ipAllowed = isIpAllowed(req.staff.tenant_id, clientIp);
@@ -1508,6 +1519,7 @@ app.get('/api/bot/me', tgAuth, (req, res) => {
     motivation_quotes: motivationQuotes,
     swap_modes_enabled: swapModes,
     clock_in_window: clockInWindow,
+    total_break_budget: totalBudget,
     leave_quota: leaveQuota,
   });
 });
@@ -1850,7 +1862,23 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
   if (att.current_status !== 'working') return fail(res, 400, 'Sedang break, end dulu.');
   const dailyQuota = getEffectiveBreakLimit(req.staff.tenant_id, req.staff.department_id, type);
 
-  // Cek kuota harian: total durasi break type ini hari ini tidak boleh melebihi daily_quota
+  // SHARED CUMULATIVE QUOTA: total budget = sum semua per-type quota.
+  // Overbreak satu type kurangi sisa type lain (waterfall).
+  const allTypes = ['smoke', 'toilet', 'outside'];
+  const totalQuota = allTypes.reduce((a, t) => a + (getEffectiveBreakLimit(req.staff.tenant_id, req.staff.department_id, t) || 0), 0);
+  const totalUsedRow = db.prepare(`
+    SELECT COALESCE(SUM(duration_minutes), 0) AS used
+    FROM break_log
+    WHERE staff_id = ? AND DATE(start_time) = ?
+  `).get(req.staff.id, today);
+  const totalUsed = totalUsedRow?.used || 0;
+  const totalRemaining = Math.max(0, totalQuota - totalUsed);
+
+  if (totalRemaining <= 0) {
+    return fail(res, 400, `Total kuota break habis hari ini (${totalUsed}m / ${totalQuota}m). Tidak bisa break apapun lagi.`);
+  }
+
+  // Per-type used
   const used = db.prepare(`
     SELECT COALESCE(SUM(duration_minutes), 0) AS used
     FROM break_log
@@ -1859,11 +1887,13 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
 
   if (used >= dailyQuota) {
     const labels = { smoke: 'Smoke', toilet: 'Toilet', outside: 'Go Out' };
-    return fail(res, 400, `Kuota ${labels[type] || type} habis hari ini (${used}m/${dailyQuota}m).`);
+    return fail(res, 400, `Kuota ${labels[type] || type} habis hari ini (${used}m/${dailyQuota}m). Sisa total budget: ${totalRemaining}m — coba type lain.`);
   }
 
-  // Sisa kuota untuk break ini = daily_quota - sudah dipakai
-  const remainingQuota = Math.max(1, dailyQuota - used);
+  // Limit untuk break ini = min(sisa per-type, sisa total budget)
+  // — supaya overbreak satu type kurangi remaining type lain
+  const perTypeRemaining = Math.max(1, dailyQuota - used);
+  const remainingQuota = Math.min(perTypeRemaining, totalRemaining);
 
   const now = new Date();
   const ipStart = clientIp.slice(0, 45);
