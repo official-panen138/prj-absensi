@@ -117,18 +117,24 @@ export default function MiniApp() {
     try {
       const r = await api(path, token, { method: 'POST', body });
       setInfo('✓ OK');
-      if (path === '/clock-in') {
+      // Popup motivasi untuk clock-in/out (baik direct maupun via QR scan)
+      if (path === '/clock-in' || path === '/clock-in-qr') {
         const custom = me?.motivation_quotes?.start;
         const pool = (custom && custom.length) ? custom : START_QUOTES;
         setPopup({ kind: 'start', title: '🚀 Selamat Bekerja!', quote: pickRandom(pool), color: '#34d399' });
-      } else if (path === '/clock-out') {
+      } else if (path === '/clock-out' || path === '/clock-out-qr') {
         const custom = me?.motivation_quotes?.end;
         const pool = (custom && custom.length) ? custom : END_QUOTES;
         setPopup({ kind: 'end', title: '🙏 Terima Kasih!', quote: pickRandom(pool), color: '#60a5fa' });
       }
       await refresh();
       return r;
-    } catch (e) { setErr(e.message); }
+    } catch (e) {
+      setErr(e.message);
+      // Refresh juga saat error supaya state Mini App ter-update
+      // (mis. IP berubah, shift kemarin masih open, schedule berubah, dll)
+      try { await refresh(); } catch {}
+    }
     finally { setBusy(false); }
   };
 
@@ -146,6 +152,7 @@ export default function MiniApp() {
       setInfo('✓ QR dikirim ke grup monitor. Buka kamera untuk scan.');
     } catch (e) {
       setErr(e.message);
+      try { await refresh(); } catch {}
       setBusy(false);
       return;
     }

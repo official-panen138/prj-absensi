@@ -1909,6 +1909,12 @@ app.post('/api/bot/break-start', tgAuth, async (req, res) => {
 });
 
 app.post('/api/bot/break-request-qr', tgAuth, async (req, res) => {
+  // Cek IP DULU sebelum push QR ke grup — supaya QR tidak terkirim kalau di luar kantor
+  const clientIp = getClientIp(req);
+  if (!isIpAllowed(req.staff.tenant_id, clientIp)) {
+    notifyIpViolation(req.staff.tenant_id, { name: req.staff.name, department: req.staff.department, department_id: req.staff.department_id }, 'break_end', clientIp).catch(() => {});
+    return fail(res, 403, `Anda di luar jaringan kantor (IP: ${clientIp}). Tidak bisa request QR Back to Work.`);
+  }
   const today = todayPP();
   const att = findOpenAttendance(req.staff.id, today);
   if (!att) return fail(res, 400, 'Belum clock-in atau sudah clock-out.');
